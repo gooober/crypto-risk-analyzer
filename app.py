@@ -1,3 +1,83 @@
+import streamlit as st
+import requests
+import time
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import json
+from typing import Dict, List, Tuple, Optional
+
+# Page configuration
+st.set_page_config(
+    page_title="Advanced Crypto Trade Analyzer", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.title("🚀 Advanced Crypto Trade Analyzer")
+
+# Initialize session state
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = datetime.now()
+if 'data_cache' not in st.session_state:
+    st.session_state.data_cache = {}
+if 'alerts' not in st.session_state:
+    st.session_state.alerts = []
+if 'trade_history' not in st.session_state:
+    st.session_state.trade_history = []
+if 'backtest_results' not in st.session_state:
+    st.session_state.backtest_results = {}
+
+# Sidebar configuration
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    symbols = st.multiselect(
+        "Select symbols to analyze:", 
+        ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT", "BNBUSDT", "XRPUSDT", "MATICUSDT", "AVAXUSDT"], 
+        default=["BTCUSDT", "ETHUSDT"]
+    )
+    leverage = st.slider("Set your leverage (X):", 1, 50, 10)
+    
+    st.header("🔄 Auto-Refresh Settings")
+    auto_refresh = st.checkbox("Enable Auto-Refresh", value=True)
+    refresh_rate = st.slider("Refresh every (seconds):", 10, 120, 30)
+    
+    # Alert Settings
+    st.header("🔔 Alert Settings")
+    enable_alerts = st.checkbox("Enable Alerts", value=False)
+    if enable_alerts:
+        alert_prob_threshold = st.slider("Alert when probability >", 60, 90, 70)
+        alert_risk_threshold = st.slider("Alert when risk <", 10, 50, 25)
+        alert_volume_spike = st.slider("Alert on volume spike >", 150, 500, 200)
+    
+    # Advanced Settings
+    st.header("🔧 Advanced Settings")
+    use_ai_predictions = st.checkbox("Enable AI Predictions", value=False)
+    show_order_book = st.checkbox("Show Order Book Analysis", value=False)
+    enable_backtesting = st.checkbox("Enable Backtesting", value=False)
+    
+    if st.button("🔄 Manual Refresh"):
+        st.session_state.last_update = datetime.now() - timedelta(seconds=refresh_rate)
+        st.rerun()
+    
+    if st.button("🗑️ Clear Alerts"):
+        st.session_state.alerts = []
+    
+    if st.button("📊 Export Data"):
+        export_data = {
+            'trades': st.session_state.trade_history,
+            'alerts': st.session_state.alerts,
+            'timestamp': datetime.now().isoformat()
+        }
+        st.download_button(
+            label="Download JSON",
+            data=json.dumps(export_data, indent=2, default=str),
+            file_name=f"crypto_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
+
 # Auto-refresh logic
 if auto_refresh:
     current_time = datetime.now()
@@ -6,6 +86,622 @@ if auto_refresh:
     if time_diff >= refresh_rate:
         st.session_state.last_update = current_time
         st.rerun()
+
+# Enhanced data fetching with multiple APIs and order book
+@st.cache_data(ttl=15)
+def get_enhanced_data(symbol):
+    """Fetch enhanced data with technical indicators and order book"""
+    
+    def try_binance():
+        base_url = "https://fapi.binance.com"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json"
+        }
+        
+        try:
+            # Get kline data for technical analysis
+            klines_response = requests.get(
+                f"{base_url}/fapi/v1/klines", 
+                params={"symbol": symbol, "interval": "1h", "limit": 100}, 
+                headers=headers, timeout=8
+            )
+            
+            # Get 24h stats
+            stats_response = requests.get(
+                f"{base_url}/fapi/v1/ticker/24hr", 
+                params={"symbol": symbol}, 
+                headers=headers, timeout=8
+            )
+            
+            # Get order book depth
+            depth_response = requests.get(
+                f"{base_url}/fapi/v1/depth",
+                params={"symbol": symbol, "limit": 20},
+                headers=headers, timeout=5
+            )
+            
+            if klines_response.status_code == 200 and stats_response.status_code == 200:
+                klines = klines_response.json()
+                stats = stats_response.json()
+                depth = depth_response.json() if depth_response.status_code == 200 else None
+                
+                # Process kline data
+                df = pd.DataFrame(klines, columns=[
+                    'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                    'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                    'taker_buy_quote', 'ignore'
+                ])
+                
+                df = df.astype({
+                    'open': float, 'high': float, 'low': float, 
+                    'close': float, 'volume': float
+                })
+                
+                # Calculate technical indicators
+                closes = df['close'].values
+                highs = df['high'].values
+                lows = df['low'].values
+                volumes = df['volume'].values
+                
+                # Enhanced RSI Calculation
+                def calculate_rsi(prices, period=14):
+                    deltas = np.diff(prices)
+                    gains = np.where(deltas > 0, deltas, 0)
+                    losses = np.where(deltas < 0, -deltas, 0)
+                    
+                    avg_gains = pd.Series(gains).rolling(window=period).mean()
+                    avg_losses = pd.Series(losses).rolling(window=period).mean()
+                    
+                    rs = avg_gains / avg_losses
+                    rsi = 100 - (100 / (1 + rs))
+                    return rsi.iloc[-1] if len(rsi) > 0 and not np.isnan(rsi.iloc[-1]) else 50
+                
+                # Stochastic RSI
+                def calculate_stoch_rsi(rsi_values, period=14):
+                    if len(rsi_values) < period:
+                        return 50
+                    min_rsi = min(rsi_values[-period:])
+                    max_rsi = max(rsi_values[-period:])
+                    if max_rsi - min_rsi == 0:
+                        return 50
+                    return ((rsi_values[-1] - min_rsi) / (max_rsi - min_rsi)) * 100
+                
+                # Moving Averages
+                ma_7 = np.mean(closes[-7:]) if len(closes) >= 7 else closes[-1]
+                ma_20 = np.mean(closes[-20:]) if len(closes) >= 20 else closes[-1]
+                ma_50 = np.mean(closes[-50:]) if len(closes) >= 50 else closes[-1]
+                ma_200 = np.mean(closes[-200:]) if len(closes) >= 200 else closes[-1]
+                
+                # MACD
+                ema_12 = pd.Series(closes).ewm(span=12).mean().iloc[-1]
+                ema_26 = pd.Series(closes).ewm(span=26).mean().iloc[-1]
+                macd = ema_12 - ema_26
+                signal_line = pd.Series(closes).ewm(span=9).mean().iloc[-1]
+                macd_histogram = macd - signal_line
+                
+                # Bollinger Bands
+                bb_period = 20
+                if len(closes) >= bb_period:
+                    bb_sma = np.mean(closes[-bb_period:])
+                    bb_std = np.std(closes[-bb_period:])
+                    bb_upper = bb_sma + (bb_std * 2)
+                    bb_lower = bb_sma - (bb_std * 2)
+                    bb_position = (closes[-1] - bb_lower) / (bb_upper - bb_lower) * 100
+                else:
+                    bb_position = 50
+                    bb_upper = bb_lower = closes[-1]
+                
+                # ATR (Average True Range)
+                def calculate_atr(highs, lows, closes, period=14):
+                    if len(highs) < period + 1:
+                        return 0
+                    tr_list = []
+                    for i in range(1, len(highs)):
+                        tr = max(
+                            highs[i] - lows[i],
+                            abs(highs[i] - closes[i-1]),
+                            abs(lows[i] - closes[i-1])
+                        )
+                        tr_list.append(tr)
+                    return np.mean(tr_list[-period:]) if tr_list else 0
+                
+                atr = calculate_atr(highs, lows, closes)
+                
+                # Volume analysis
+                avg_volume = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
+                volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1
+                
+                # Support and Resistance levels
+                recent_highs = highs[-20:]
+                recent_lows = lows[-20:]
+                resistance = max(recent_highs) if len(recent_highs) > 0 else closes[-1]
+                support = min(recent_lows) if len(recent_lows) > 0 else closes[-1]
+                
+                # Order book analysis
+                order_book_imbalance = 0
+                bid_wall = 0
+                ask_wall = 0
+                if depth:
+                    bids = depth.get('bids', [])
+                    asks = depth.get('asks', [])
+                    
+                    bid_volume = sum(float(bid[1]) for bid in bids[:5])
+                    ask_volume = sum(float(ask[1]) for ask in asks[:5])
+                    
+                    if bid_volume + ask_volume > 0:
+                        order_book_imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume) * 100
+                    
+                    # Detect walls
+                    if bids:
+                        bid_wall = max(float(bid[1]) for bid in bids[:5])
+                    if asks:
+                        ask_wall = max(float(ask[1]) for ask in asks[:5])
+                
+                # Get funding rate
+                funding_rate = 0.0
+                try:
+                    funding_response = requests.get(
+                        f"{base_url}/fapi/v1/fundingRate", 
+                        params={"symbol": symbol, "limit": 1}, 
+                        headers=headers, timeout=5
+                    )
+                    if funding_response.status_code == 200:
+                        funding = funding_response.json()
+                        funding_rate = float(funding[0]['fundingRate']) * 100 if funding else 0.0
+                except:
+                    pass
+                
+                # Calculate RSI values for Stoch RSI
+                rsi_values = []
+                for i in range(14, len(closes)):
+                    rsi_val = calculate_rsi(closes[:i+1])
+                    rsi_values.append(rsi_val)
+                
+                current_rsi = calculate_rsi(closes)
+                stoch_rsi = calculate_stoch_rsi(rsi_values) if rsi_values else 50
+                
+                return {
+                    "current_price": float(stats.get("lastPrice", 0)),
+                    "price_change_24h": float(stats.get("priceChangePercent", 0)),
+                    "volume": float(stats.get("volume", 0)),
+                    "volume_ratio": volume_ratio,
+                    "volatility": abs(float(stats.get("priceChangePercent", 0))),
+                    "funding_rate": funding_rate,
+                    "long_short_ratio": 1.0,
+                    "rsi": current_rsi,
+                    "stoch_rsi": stoch_rsi,
+                    "ma_7": ma_7,
+                    "ma_20": ma_20,
+                    "ma_50": ma_50,
+                    "ma_200": ma_200,
+                    "macd": macd,
+                    "macd_signal": signal_line,
+                    "macd_histogram": macd_histogram,
+                    "bb_position": bb_position,
+                    "bb_upper": bb_upper,
+                    "bb_lower": bb_lower,
+                    "atr": atr,
+                    "support": support,
+                    "resistance": resistance,
+                    "order_book_imbalance": order_book_imbalance,
+                    "bid_wall": bid_wall,
+                    "ask_wall": ask_wall,
+                    "last_updated": datetime.now().strftime("%H:%M:%S"),
+                    "data_source": "Binance",
+                    "price_history": closes[-24:].tolist(),
+                    "volume_history": volumes[-24:].tolist(),
+                    "timestamps": [datetime.fromtimestamp(int(k[0])/1000).strftime("%H:%M") for k in klines[-24:]]
+                }
+        except Exception as e:
+            st.warning(f"Binance API failed for {symbol}: {str(e)}")
+            return None
+    
+    # Try Binance first
+    result = try_binance()
+    if result:
+        return result
+    
+    # Fallback to demo data
+    return {
+        "current_price": 50000.0 if "BTC" in symbol else 3000.0 if "ETH" in symbol else 100.0,
+        "price_change_24h": 1.2,
+        "volume": 1000000,
+        "volume_ratio": 1.0,
+        "volatility": 2.5,
+        "funding_rate": 0.01,
+        "long_short_ratio": 1.1,
+        "rsi": 50,
+        "stoch_rsi": 50,
+        "ma_7": 50000,
+        "ma_20": 50000,
+        "ma_50": 49000,
+        "ma_200": 48000,
+        "macd": 0,
+        "macd_signal": 0,
+        "macd_histogram": 0,
+        "bb_position": 50,
+        "bb_upper": 51000,
+        "bb_lower": 49000,
+        "atr": 1000,
+        "support": 49500,
+        "resistance": 50500,
+        "order_book_imbalance": 0,
+        "bid_wall": 0,
+        "ask_wall": 0,
+        "last_updated": datetime.now().strftime("%H:%M:%S"),
+        "data_source": "Demo Mode",
+        "price_history": [50000] * 24,
+        "volume_history": [1000000] * 24,
+        "timestamps": [(datetime.now() - timedelta(hours=i)).strftime("%H:%M") for i in range(24, 0, -1)]
+    }
+
+# Advanced probability calculation with AI predictions
+def calculate_advanced_probabilities(data, leverage, use_ai=False):
+    """Enhanced probability calculation with technical indicators and optional AI"""
+    if not data:
+        return {"long_prob": 50, "short_prob": 50, "risk_score": 50, "recommendation": "NEUTRAL"}
+    
+    base_prob = 50
+    
+    # Technical indicator signals with weights
+    signals = {}
+    
+    # RSI signal (weight: 15%)
+    rsi_signal = 0
+    if data['rsi'] > 80:
+        rsi_signal = -10
+    elif data['rsi'] > 70:
+        rsi_signal = -6
+    elif data['rsi'] < 20:
+        rsi_signal = 10
+    elif data['rsi'] < 30:
+        rsi_signal = 6
+    elif data['rsi'] > 60:
+        rsi_signal = -2
+    elif data['rsi'] < 40:
+        rsi_signal = 2
+    signals['rsi'] = rsi_signal
+    
+    # Stochastic RSI signal (weight: 10%)
+    stoch_signal = 0
+    if data['stoch_rsi'] > 80:
+        stoch_signal = -5
+    elif data['stoch_rsi'] < 20:
+        stoch_signal = 5
+    signals['stoch_rsi'] = stoch_signal
+    
+    # Moving average signal (weight: 20%)
+    ma_signal = 0
+    current_price = data['current_price']
+    if current_price > data['ma_7'] > data['ma_20'] > data['ma_50']:
+        ma_signal = 8  # Strong uptrend
+    elif current_price < data['ma_7'] < data['ma_20'] < data['ma_50']:
+        ma_signal = -8  # Strong downtrend
+    elif current_price > data['ma_20'] and data['ma_20'] > data['ma_50']:
+        ma_signal = 5
+    elif current_price < data['ma_20'] and data['ma_20'] < data['ma_50']:
+        ma_signal = -5
+    elif current_price > data['ma_20']:
+        ma_signal = 2
+    elif current_price < data['ma_20']:
+        ma_signal = -2
+    signals['ma'] = ma_signal
+    
+    # MACD signal (weight: 15%)
+    macd_signal = 0
+    if data['macd_histogram'] > 0 and data['macd'] > data['macd_signal']:
+        macd_signal = 6
+    elif data['macd_histogram'] < 0 and data['macd'] < data['macd_signal']:
+        macd_signal = -6
+    elif data['macd'] > 0:
+        macd_signal = 3
+    elif data['macd'] < 0:
+        macd_signal = -3
+    signals['macd'] = macd_signal
+    
+    # Bollinger Bands signal (weight: 10%)
+    bb_signal = 0
+    if data['bb_position'] > 90:
+        bb_signal = -6
+    elif data['bb_position'] < 10:
+        bb_signal = 6
+    elif data['bb_position'] > 75:
+        bb_signal = -3
+    elif data['bb_position'] < 25:
+        bb_signal = 3
+    signals['bb'] = bb_signal
+    
+    # Volume analysis (weight: 10%)
+    volume_signal = 0
+    if data['volume_ratio'] > 2:
+        volume_signal = 5 if data['price_change_24h'] > 0 else -5
+    elif data['volume_ratio'] > 1.5:
+        volume_signal = 3 if data['price_change_24h'] > 0 else -3
+    elif data['volume_ratio'] < 0.5:
+        volume_signal = -2
+    signals['volume'] = volume_signal
+    
+    # Order book analysis (weight: 10%)
+    orderbook_signal = 0
+    if show_order_book and data['order_book_imbalance'] != 0:
+        if data['order_book_imbalance'] > 20:
+            orderbook_signal = 5
+        elif data['order_book_imbalance'] < -20:
+            orderbook_signal = -5
+        else:
+            orderbook_signal = data['order_book_imbalance'] / 10
+    signals['orderbook'] = orderbook_signal
+    
+    # Support/Resistance levels (weight: 5%)
+    sr_signal = 0
+    price_to_resistance = (data['resistance'] - current_price) / current_price * 100
+    price_to_support = (current_price - data['support']) / current_price * 100
+    
+    if price_to_resistance < 1:
+        sr_signal = -4
+    elif price_to_support < 1:
+        sr_signal = 4
+    signals['support_resistance'] = sr_signal
+    
+    # Funding rate bias (weight: 5%)
+    funding_signal = 0
+    if data['funding_rate'] > 0.05:
+        funding_signal = -8
+    elif data['funding_rate'] > 0.02:
+        funding_signal = -4
+    elif data['funding_rate'] < -0.05:
+        funding_signal = 8
+    elif data['funding_rate'] < -0.02:
+        funding_signal = 4
+    signals['funding'] = funding_signal
+    
+    # Calculate weighted signals
+    total_signal = sum(signals.values())
+    
+    # AI prediction boost (if enabled)
+    if use_ai and use_ai_predictions:
+        # Simulated AI prediction based on pattern recognition
+        ai_boost = 0
+        
+        # Pattern detection
+        if len(data['price_history']) >= 3:
+            # Trend detection
+            recent_prices = data['price_history'][-3:]
+            if all(recent_prices[i] < recent_prices[i+1] for i in range(len(recent_prices)-1)):
+                ai_boost += 5  # Uptrend
+            elif all(recent_prices[i] > recent_prices[i+1] for i in range(len(recent_prices)-1)):
+                ai_boost += -5  # Downtrend
+            
+            # Volume trend
+            recent_volumes = data['volume_history'][-3:]
+            if all(recent_volumes[i] < recent_volumes[i+1] for i in range(len(recent_volumes)-1)):
+                ai_boost += 3 if data['price_change_24h'] > 0 else -3
+        
+        total_signal += ai_boost
+        signals['ai_prediction'] = ai_boost
+    
+    # Apply leverage penalty
+    leverage_penalty = min(20, (leverage - 1) * 0.8)
+    
+    # Calculate final probabilities
+    long_probability = base_prob + total_signal - leverage_penalty
+    short_probability = base_prob - total_signal - leverage_penalty
+    
+    # Normalize probabilities
+    long_probability = max(10, min(90, long_probability))
+    short_probability = max(10, min(90, short_probability))
+    
+    # Risk calculation with ATR
+    atr_risk = (data['atr'] / current_price) * 100 * leverage
+    risk_score = (
+        data['volatility'] * leverage * 0.15 +
+        abs(data['funding_rate']) * 10 +
+        (leverage - 1) * 1.5 +
+        atr_risk * 0.5 +
+        max(0, (1000000 - data['volume']) / 150000)
+    )
+    risk_score = min(100, round(risk_score, 1))
+    
+    # Generate recommendation
+    prob_diff = abs(long_probability - short_probability)
+    confidence = round(prob_diff, 1)
+    
+    if prob_diff < 5:
+        recommendation = "NEUTRAL ⚖️"
+        safer_direction = "Wait for clearer signal"
+    elif long_probability > short_probability:
+        if prob_diff > 25:
+            recommendation = "STRONG LONG 🚀🚀"
+        elif prob_diff > 15:
+            recommendation = "LONG 🚀"
+        else:
+            recommendation = "WEAK LONG 📈"
+        safer_direction = "Long"
+    else:
+        if prob_diff > 25:
+            recommendation = "STRONG SHORT 📉📉"
+        elif prob_diff > 15:
+            recommendation = "SHORT 📉"
+        else:
+            recommendation = "WEAK SHORT 📉"
+        safer_direction = "Short"
+    
+    return {
+        "long_prob": round(long_probability, 1),
+        "short_prob": round(short_probability, 1),
+        "risk_score": risk_score,
+        "recommendation": recommendation,
+        "safer_direction": safer_direction,
+        "confidence": confidence,
+        "signals": signals
+    }
+
+# Enhanced alert system
+def check_alerts(symbol, data, analysis):
+    """Check if any alerts should be triggered"""
+    if not enable_alerts:
+        return
+    
+    current_time = datetime.now().strftime("%H:%M:%S")
+    
+    # High probability alert
+    max_prob = max(analysis['long_prob'], analysis['short_prob'])
+    if max_prob >= alert_prob_threshold:
+        direction = "Long" if analysis['long_prob'] > analysis['short_prob'] else "Short"
+        alert_msg = f"🎯 {symbol}: Strong {direction} signal! ({max_prob}% probability)"
+        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
+            st.session_state.alerts.append({
+                'time': current_time,
+                'symbol': symbol,
+                'message': alert_msg,
+                'type': 'probability',
+                'data': {'probability': max_prob, 'direction': direction}
+            })
+    
+    # Low risk alert
+    if analysis['risk_score'] <= alert_risk_threshold:
+        alert_msg = f"🛡️ {symbol}: Low risk opportunity! (Risk: {analysis['risk_score']})"
+        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
+            st.session_state.alerts.append({
+                'time': current_time,
+                'symbol': symbol,
+                'message': alert_msg,
+                'type': 'risk',
+                'data': {'risk_score': analysis['risk_score']}
+            })
+    
+    # Volume spike alert
+    if data['volume_ratio'] * 100 >= alert_volume_spike:
+        alert_msg = f"📊 {symbol}: Volume spike detected! ({data['volume_ratio']:.1f}x average)"
+        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
+            st.session_state.alerts.append({
+                'time': current_time,
+                'symbol': symbol,
+                'message': alert_msg,
+                'type': 'volume',
+                'data': {'volume_ratio': data['volume_ratio']}
+            })
+    
+    # Support/Resistance alert
+    current_price = data['current_price']
+    if abs(current_price - data['support']) / current_price < 0.01:
+        alert_msg = f"💪 {symbol}: Near support level! (${data['support']:.2f})"
+        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
+            st.session_state.alerts.append({
+                'time': current_time,
+                'symbol': symbol,
+                'message': alert_msg,
+                'type': 'support',
+                'data': {'support': data['support']}
+            })
+    elif abs(current_price - data['resistance']) / current_price < 0.01:
+        alert_msg = f"🚧 {symbol}: Near resistance level! (${data['resistance']:.2f})"
+        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
+            st.session_state.alerts.append({
+                'time': current_time,
+                'symbol': symbol,
+                'message': alert_msg,
+                'type': 'resistance',
+                'data': {'resistance': data['resistance']}
+            })
+
+# Risk level function
+def get_risk_level(score):
+    if score < 20:
+        return "🟢 LOW", "green"
+    elif score < 40:
+        return "🟡 MEDIUM", "orange"
+    elif score < 60:
+        return "🟠 HIGH", "red"
+    else:
+        return "🔴 EXTREME", "darkred"
+
+# Backtesting function
+def run_backtest(symbol, data, strategy_params):
+    """Run a simple backtest on historical data"""
+    if not data or 'price_history' not in data:
+        return None
+    
+    prices = data['price_history']
+    if len(prices) < 10:
+        return None
+    
+    # Simple moving average crossover strategy
+    short_period = strategy_params.get('short_ma', 3)
+    long_period = strategy_params.get('long_ma', 7)
+    
+    positions = []
+    trades = []
+    current_position = None
+    
+    for i in range(long_period, len(prices)):
+        short_ma = np.mean(prices[i-short_period:i])
+        long_ma = np.mean(prices[i-long_period:i])
+        
+        if short_ma > long_ma and current_position != 'long':
+            if current_position == 'short':
+                # Close short
+                trades.append({
+                    'type': 'close_short',
+                    'price': prices[i],
+                    'index': i
+                })
+            # Open long
+            trades.append({
+                'type': 'open_long',
+                'price': prices[i],
+                'index': i
+            })
+            current_position = 'long'
+        elif short_ma < long_ma and current_position != 'short':
+            if current_position == 'long':
+                # Close long
+                trades.append({
+                    'type': 'close_long',
+                    'price': prices[i],
+                    'index': i
+                })
+            # Open short
+            trades.append({
+                'type': 'open_short',
+                'price': prices[i],
+                'index': i
+            })
+            current_position = 'short'
+    
+    # Calculate returns
+    total_return = 0
+    win_trades = 0
+    loss_trades = 0
+    
+    for i in range(0, len(trades)-1, 2):
+        if i+1 < len(trades):
+            entry_trade = trades[i]
+            exit_trade = trades[i+1]
+            
+            if entry_trade['type'] == 'open_long':
+                return_pct = (exit_trade['price'] - entry_trade['price']) / entry_trade['price'] * 100
+            else:  # short
+                return_pct = (entry_trade['price'] - exit_trade['price']) / entry_trade['price'] * 100
+            
+            total_return += return_pct
+            if return_pct > 0:
+                win_trades += 1
+            else:
+                loss_trades += 1
+    
+    total_trades = win_trades + loss_trades
+    win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
+    
+    return {
+        'total_return': total_return,
+        'win_rate': win_rate,
+        'total_trades': total_trades,
+        'win_trades': win_trades,
+        'loss_trades': loss_trades,
+        'trades': trades
+    }
 
 # Main interface with tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Simple View", "🔬 Advanced View", "📈 Market Overview", "🧪 Backtesting"])
@@ -956,707 +1652,4 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# End of applicationimport streamlit as st
-import requests
-import time
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import json
-from typing import Dict, List, Tuple, Optional
-
-# Page configuration
-st.set_page_config(
-    page_title="Advanced Crypto Trade Analyzer", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.title("🚀 Advanced Crypto Trade Analyzer")
-
-# Initialize session state
-if 'last_update' not in st.session_state:
-    st.session_state.last_update = datetime.now()
-if 'data_cache' not in st.session_state:
-    st.session_state.data_cache = {}
-if 'alerts' not in st.session_state:
-    st.session_state.alerts = []
-if 'trade_history' not in st.session_state:
-    st.session_state.trade_history = []
-if 'backtest_results' not in st.session_state:
-    st.session_state.backtest_results = {}
-
-# Sidebar configuration
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    symbols = st.multiselect(
-        "Select symbols to analyze:", 
-        ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT", "BNBUSDT", "XRPUSDT", "MATICUSDT", "AVAXUSDT"], 
-        default=["BTCUSDT", "ETHUSDT"]
-    )
-    leverage = st.slider("Set your leverage (X):", 1, 50, 10)
-    
-    st.header("🔄 Auto-Refresh Settings")
-    auto_refresh = st.checkbox("Enable Auto-Refresh", value=True)
-    refresh_rate = st.slider("Refresh every (seconds):", 10, 120, 30)
-    
-    # Alert Settings
-    st.header("🔔 Alert Settings")
-    enable_alerts = st.checkbox("Enable Alerts", value=False)
-    if enable_alerts:
-        alert_prob_threshold = st.slider("Alert when probability >", 60, 90, 70)
-        alert_risk_threshold = st.slider("Alert when risk <", 10, 50, 25)
-        alert_volume_spike = st.slider("Alert on volume spike >", 150, 500, 200)
-    
-    # Advanced Settings
-    st.header("🔧 Advanced Settings")
-    use_ai_predictions = st.checkbox("Enable AI Predictions", value=False)
-    show_order_book = st.checkbox("Show Order Book Analysis", value=False)
-    enable_backtesting = st.checkbox("Enable Backtesting", value=False)
-    
-    if st.button("🔄 Manual Refresh"):
-        st.session_state.last_update = datetime.now() - timedelta(seconds=refresh_rate)
-        st.rerun()
-    
-    if st.button("🗑️ Clear Alerts"):
-        st.session_state.alerts = []
-    
-    if st.button("📊 Export Data"):
-        export_data = {
-            'trades': st.session_state.trade_history,
-            'alerts': st.session_state.alerts,
-            'timestamp': datetime.now().isoformat()
-        }
-        st.download_button(
-            label="Download JSON",
-            data=json.dumps(export_data, indent=2, default=str),
-            file_name=f"crypto_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
-
-# Auto-refresh logic
-if auto_refresh:
-    current_time = datetime.now()
-    time_diff = (current_time - st.session_state.last_update).total_seconds()
-    
-    if time_diff >= refresh_rate:
-        st.session_state.last_update = current_time
-        st.rerun()
-
-# Enhanced data fetching with multiple APIs and order book
-@st.cache_data(ttl=15)
-def get_enhanced_data(symbol):
-    """Fetch enhanced data with technical indicators and order book"""
-    
-    def try_binance():
-        base_url = "https://fapi.binance.com"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json"
-        }
-        
-        try:
-            # Get kline data for technical analysis
-            klines_response = requests.get(
-                f"{base_url}/fapi/v1/klines", 
-                params={"symbol": symbol, "interval": "1h", "limit": 100}, 
-                headers=headers, timeout=8
-            )
-            
-            # Get 24h stats
-            stats_response = requests.get(
-                f"{base_url}/fapi/v1/ticker/24hr", 
-                params={"symbol": symbol}, 
-                headers=headers, timeout=8
-            )
-            
-            # Get order book depth
-            depth_response = requests.get(
-                f"{base_url}/fapi/v1/depth",
-                params={"symbol": symbol, "limit": 20},
-                headers=headers, timeout=5
-            )
-            
-            if klines_response.status_code == 200 and stats_response.status_code == 200:
-                klines = klines_response.json()
-                stats = stats_response.json()
-                depth = depth_response.json() if depth_response.status_code == 200 else None
-                
-                # Process kline data
-                df = pd.DataFrame(klines, columns=[
-                    'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                    'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-                    'taker_buy_quote', 'ignore'
-                ])
-                
-                df = df.astype({
-                    'open': float, 'high': float, 'low': float, 
-                    'close': float, 'volume': float
-                })
-                
-                # Calculate technical indicators
-                closes = df['close'].values
-                highs = df['high'].values
-                lows = df['low'].values
-                volumes = df['volume'].values
-                
-                # Enhanced RSI Calculation
-                def calculate_rsi(prices, period=14):
-                    deltas = np.diff(prices)
-                    gains = np.where(deltas > 0, deltas, 0)
-                    losses = np.where(deltas < 0, -deltas, 0)
-                    
-                    avg_gains = pd.Series(gains).rolling(window=period).mean()
-                    avg_losses = pd.Series(losses).rolling(window=period).mean()
-                    
-                    rs = avg_gains / avg_losses
-                    rsi = 100 - (100 / (1 + rs))
-                    return rsi.iloc[-1] if len(rsi) > 0 and not np.isnan(rsi.iloc[-1]) else 50
-                
-                # Stochastic RSI
-                def calculate_stoch_rsi(rsi_values, period=14):
-                    if len(rsi_values) < period:
-                        return 50
-                    min_rsi = min(rsi_values[-period:])
-                    max_rsi = max(rsi_values[-period:])
-                    if max_rsi - min_rsi == 0:
-                        return 50
-                    return ((rsi_values[-1] - min_rsi) / (max_rsi - min_rsi)) * 100
-                
-                # Moving Averages
-                ma_7 = np.mean(closes[-7:]) if len(closes) >= 7 else closes[-1]
-                ma_20 = np.mean(closes[-20:]) if len(closes) >= 20 else closes[-1]
-                ma_50 = np.mean(closes[-50:]) if len(closes) >= 50 else closes[-1]
-                ma_200 = np.mean(closes[-200:]) if len(closes) >= 200 else closes[-1]
-                
-                # MACD
-                ema_12 = pd.Series(closes).ewm(span=12).mean().iloc[-1]
-                ema_26 = pd.Series(closes).ewm(span=26).mean().iloc[-1]
-                macd = ema_12 - ema_26
-                signal_line = pd.Series(closes).ewm(span=9).mean().iloc[-1]
-                macd_histogram = macd - signal_line
-                
-                # Bollinger Bands
-                bb_period = 20
-                if len(closes) >= bb_period:
-                    bb_sma = np.mean(closes[-bb_period:])
-                    bb_std = np.std(closes[-bb_period:])
-                    bb_upper = bb_sma + (bb_std * 2)
-                    bb_lower = bb_sma - (bb_std * 2)
-                    bb_position = (closes[-1] - bb_lower) / (bb_upper - bb_lower) * 100
-                else:
-                    bb_position = 50
-                    bb_upper = bb_lower = closes[-1]
-                
-                # ATR (Average True Range)
-                def calculate_atr(highs, lows, closes, period=14):
-                    if len(highs) < period + 1:
-                        return 0
-                    tr_list = []
-                    for i in range(1, len(highs)):
-                        tr = max(
-                            highs[i] - lows[i],
-                            abs(highs[i] - closes[i-1]),
-                            abs(lows[i] - closes[i-1])
-                        )
-                        tr_list.append(tr)
-                    return np.mean(tr_list[-period:]) if tr_list else 0
-                
-                atr = calculate_atr(highs, lows, closes)
-                
-                # Volume analysis
-                avg_volume = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
-                volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1
-                
-                # Support and Resistance levels
-                recent_highs = highs[-20:]
-                recent_lows = lows[-20:]
-                resistance = max(recent_highs) if len(recent_highs) > 0 else closes[-1]
-                support = min(recent_lows) if len(recent_lows) > 0 else closes[-1]
-                
-                # Order book analysis
-                order_book_imbalance = 0
-                bid_wall = 0
-                ask_wall = 0
-                if depth:
-                    bids = depth.get('bids', [])
-                    asks = depth.get('asks', [])
-                    
-                    bid_volume = sum(float(bid[1]) for bid in bids[:5])
-                    ask_volume = sum(float(ask[1]) for ask in asks[:5])
-                    
-                    if bid_volume + ask_volume > 0:
-                        order_book_imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume) * 100
-                    
-                    # Detect walls
-                    if bids:
-                        bid_wall = max(float(bid[1]) for bid in bids[:5])
-                    if asks:
-                        ask_wall = max(float(ask[1]) for ask in asks[:5])
-                
-                # Get funding rate
-                funding_rate = 0.0
-                try:
-                    funding_response = requests.get(
-                        f"{base_url}/fapi/v1/fundingRate", 
-                        params={"symbol": symbol, "limit": 1}, 
-                        headers=headers, timeout=5
-                    )
-                    if funding_response.status_code == 200:
-                        funding = funding_response.json()
-                        funding_rate = float(funding[0]['fundingRate']) * 100 if funding else 0.0
-                except:
-                    pass
-                
-                # Calculate RSI values for Stoch RSI
-                rsi_values = []
-                for i in range(14, len(closes)):
-                    rsi_val = calculate_rsi(closes[:i+1])
-                    rsi_values.append(rsi_val)
-                
-                current_rsi = calculate_rsi(closes)
-                stoch_rsi = calculate_stoch_rsi(rsi_values) if rsi_values else 50
-                
-                return {
-                    "current_price": float(stats.get("lastPrice", 0)),
-                    "price_change_24h": float(stats.get("priceChangePercent", 0)),
-                    "volume": float(stats.get("volume", 0)),
-                    "volume_ratio": volume_ratio,
-                    "volatility": abs(float(stats.get("priceChangePercent", 0))),
-                    "funding_rate": funding_rate,
-                    "long_short_ratio": 1.0,
-                    "rsi": current_rsi,
-                    "stoch_rsi": stoch_rsi,
-                    "ma_7": ma_7,
-                    "ma_20": ma_20,
-                    "ma_50": ma_50,
-                    "ma_200": ma_200,
-                    "macd": macd,
-                    "macd_signal": signal_line,
-                    "macd_histogram": macd_histogram,
-                    "bb_position": bb_position,
-                    "bb_upper": bb_upper,
-                    "bb_lower": bb_lower,
-                    "atr": atr,
-                    "support": support,
-                    "resistance": resistance,
-                    "order_book_imbalance": order_book_imbalance,
-                    "bid_wall": bid_wall,
-                    "ask_wall": ask_wall,
-                    "last_updated": datetime.now().strftime("%H:%M:%S"),
-                    "data_source": "Binance",
-                    "price_history": closes[-24:].tolist(),
-                    "volume_history": volumes[-24:].tolist(),
-                    "timestamps": [datetime.fromtimestamp(int(k[0])/1000).strftime("%H:%M") for k in klines[-24:]]
-                }
-        except Exception as e:
-            st.warning(f"Binance API failed for {symbol}: {str(e)}")
-            return None
-    
-    # Try Binance first
-    result = try_binance()
-    if result:
-        return result
-    
-    # Fallback to demo data
-    return {
-        "current_price": 50000.0 if "BTC" in symbol else 3000.0 if "ETH" in symbol else 100.0,
-        "price_change_24h": 1.2,
-        "volume": 1000000,
-        "volume_ratio": 1.0,
-        "volatility": 2.5,
-        "funding_rate": 0.01,
-        "long_short_ratio": 1.1,
-        "rsi": 50,
-        "stoch_rsi": 50,
-        "ma_7": 50000,
-        "ma_20": 50000,
-        "ma_50": 49000,
-        "ma_200": 48000,
-        "macd": 0,
-        "macd_signal": 0,
-        "macd_histogram": 0,
-        "bb_position": 50,
-        "bb_upper": 51000,
-        "bb_lower": 49000,
-        "atr": 1000,
-        "support": 49500,
-        "resistance": 50500,
-        "order_book_imbalance": 0,
-        "bid_wall": 0,
-        "ask_wall": 0,
-        "last_updated": datetime.now().strftime("%H:%M:%S"),
-        "data_source": "Demo Mode",
-        "price_history": [50000] * 24,
-        "volume_history": [1000000] * 24,
-        "timestamps": [(datetime.now() - timedelta(hours=i)).strftime("%H:%M") for i in range(24, 0, -1)]
-    }
-
-# Advanced probability calculation with AI predictions
-def calculate_advanced_probabilities(data, leverage, use_ai=False):
-    """Enhanced probability calculation with technical indicators and optional AI"""
-    if not data:
-        return {"long_prob": 50, "short_prob": 50, "risk_score": 50, "recommendation": "NEUTRAL"}
-    
-    base_prob = 50
-    
-    # Technical indicator signals with weights
-    signals = {}
-    
-    # RSI signal (weight: 15%)
-    rsi_signal = 0
-    if data['rsi'] > 80:
-        rsi_signal = -10
-    elif data['rsi'] > 70:
-        rsi_signal = -6
-    elif data['rsi'] < 20:
-        rsi_signal = 10
-    elif data['rsi'] < 30:
-        rsi_signal = 6
-    elif data['rsi'] > 60:
-        rsi_signal = -2
-    elif data['rsi'] < 40:
-        rsi_signal = 2
-    signals['rsi'] = rsi_signal
-    
-    # Stochastic RSI signal (weight: 10%)
-    stoch_signal = 0
-    if data['stoch_rsi'] > 80:
-        stoch_signal = -5
-    elif data['stoch_rsi'] < 20:
-        stoch_signal = 5
-    signals['stoch_rsi'] = stoch_signal
-    
-    # Moving average signal (weight: 20%)
-    ma_signal = 0
-    current_price = data['current_price']
-    if current_price > data['ma_7'] > data['ma_20'] > data['ma_50']:
-        ma_signal = 8  # Strong uptrend
-    elif current_price < data['ma_7'] < data['ma_20'] < data['ma_50']:
-        ma_signal = -8  # Strong downtrend
-    elif current_price > data['ma_20'] and data['ma_20'] > data['ma_50']:
-        ma_signal = 5
-    elif current_price < data['ma_20'] and data['ma_20'] < data['ma_50']:
-        ma_signal = -5
-    elif current_price > data['ma_20']:
-        ma_signal = 2
-    elif current_price < data['ma_20']:
-        ma_signal = -2
-    signals['ma'] = ma_signal
-    
-    # MACD signal (weight: 15%)
-    macd_signal = 0
-    if data['macd_histogram'] > 0 and data['macd'] > data['macd_signal']:
-        macd_signal = 6
-    elif data['macd_histogram'] < 0 and data['macd'] < data['macd_signal']:
-        macd_signal = -6
-    elif data['macd'] > 0:
-        macd_signal = 3
-    elif data['macd'] < 0:
-        macd_signal = -3
-    signals['macd'] = macd_signal
-    
-    # Bollinger Bands signal (weight: 10%)
-    bb_signal = 0
-    if data['bb_position'] > 90:
-        bb_signal = -6
-    elif data['bb_position'] < 10:
-        bb_signal = 6
-    elif data['bb_position'] > 75:
-        bb_signal = -3
-    elif data['bb_position'] < 25:
-        bb_signal = 3
-    signals['bb'] = bb_signal
-    
-    # Volume analysis (weight: 10%)
-    volume_signal = 0
-    if data['volume_ratio'] > 2:
-        volume_signal = 5 if data['price_change_24h'] > 0 else -5
-    elif data['volume_ratio'] > 1.5:
-        volume_signal = 3 if data['price_change_24h'] > 0 else -3
-    elif data['volume_ratio'] < 0.5:
-        volume_signal = -2
-    signals['volume'] = volume_signal
-    
-    # Order book analysis (weight: 10%)
-    orderbook_signal = 0
-    if show_order_book and data['order_book_imbalance'] != 0:
-        if data['order_book_imbalance'] > 20:
-            orderbook_signal = 5
-        elif data['order_book_imbalance'] < -20:
-            orderbook_signal = -5
-        else:
-            orderbook_signal = data['order_book_imbalance'] / 10
-    signals['orderbook'] = orderbook_signal
-    
-    # Support/Resistance levels (weight: 5%)
-    sr_signal = 0
-    price_to_resistance = (data['resistance'] - current_price) / current_price * 100
-    price_to_support = (current_price - data['support']) / current_price * 100
-    
-    if price_to_resistance < 1:
-        sr_signal = -4
-    elif price_to_support < 1:
-        sr_signal = 4
-    signals['support_resistance'] = sr_signal
-    
-    # Funding rate bias (weight: 5%)
-    funding_signal = 0
-    if data['funding_rate'] > 0.05:
-        funding_signal = -8
-    elif data['funding_rate'] > 0.02:
-        funding_signal = -4
-    elif data['funding_rate'] < -0.05:
-        funding_signal = 8
-    elif data['funding_rate'] < -0.02:
-        funding_signal = 4
-    signals['funding'] = funding_signal
-    
-    # Calculate weighted signals
-    total_signal = sum(signals.values())
-    
-    # AI prediction boost (if enabled)
-    if use_ai and use_ai_predictions:
-        # Simulated AI prediction based on pattern recognition
-        ai_boost = 0
-        
-        # Pattern detection
-        if len(data['price_history']) >= 3:
-            # Trend detection
-            recent_prices = data['price_history'][-3:]
-            if all(recent_prices[i] < recent_prices[i+1] for i in range(len(recent_prices)-1)):
-                ai_boost += 5  # Uptrend
-            elif all(recent_prices[i] > recent_prices[i+1] for i in range(len(recent_prices)-1)):
-                ai_boost += -5  # Downtrend
-            
-            # Volume trend
-            recent_volumes = data['volume_history'][-3:]
-            if all(recent_volumes[i] < recent_volumes[i+1] for i in range(len(recent_volumes)-1)):
-                ai_boost += 3 if data['price_change_24h'] > 0 else -3
-        
-        total_signal += ai_boost
-        signals['ai_prediction'] = ai_boost
-    
-    # Apply leverage penalty
-    leverage_penalty = min(20, (leverage - 1) * 0.8)
-    
-    # Calculate final probabilities
-    long_probability = base_prob + total_signal - leverage_penalty
-    short_probability = base_prob - total_signal - leverage_penalty
-    
-    # Normalize probabilities
-    long_probability = max(10, min(90, long_probability))
-    short_probability = max(10, min(90, short_probability))
-    
-    # Risk calculation with ATR
-    atr_risk = (data['atr'] / current_price) * 100 * leverage
-    risk_score = (
-        data['volatility'] * leverage * 0.15 +
-        abs(data['funding_rate']) * 10 +
-        (leverage - 1) * 1.5 +
-        atr_risk * 0.5 +
-        max(0, (1000000 - data['volume']) / 150000)
-    )
-    risk_score = min(100, round(risk_score, 1))
-    
-    # Generate recommendation
-    prob_diff = abs(long_probability - short_probability)
-    confidence = round(prob_diff, 1)
-    
-    if prob_diff < 5:
-        recommendation = "NEUTRAL ⚖️"
-        safer_direction = "Wait for clearer signal"
-    elif long_probability > short_probability:
-        if prob_diff > 25:
-            recommendation = "STRONG LONG 🚀🚀"
-        elif prob_diff > 15:
-            recommendation = "LONG 🚀"
-        else:
-            recommendation = "WEAK LONG 📈"
-        safer_direction = "Long"
-    else:
-        if prob_diff > 25:
-            recommendation = "STRONG SHORT 📉📉"
-        elif prob_diff > 15:
-            recommendation = "SHORT 📉"
-        else:
-            recommendation = "WEAK SHORT 📉"
-        safer_direction = "Short"
-    
-    return {
-        "long_prob": round(long_probability, 1),
-        "short_prob": round(short_probability, 1),
-        "risk_score": risk_score,
-        "recommendation": recommendation,
-        "safer_direction": safer_direction,
-        "confidence": confidence,
-        "signals": signals
-    }
-
-# Enhanced alert system
-def check_alerts(symbol, data, analysis):
-    """Check if any alerts should be triggered"""
-    if not enable_alerts:
-        return
-    
-    current_time = datetime.now().strftime("%H:%M:%S")
-    
-    # High probability alert
-    max_prob = max(analysis['long_prob'], analysis['short_prob'])
-    if max_prob >= alert_prob_threshold:
-        direction = "Long" if analysis['long_prob'] > analysis['short_prob'] else "Short"
-        alert_msg = f"🎯 {symbol}: Strong {direction} signal! ({max_prob}% probability)"
-        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
-            st.session_state.alerts.append({
-                'time': current_time,
-                'symbol': symbol,
-                'message': alert_msg,
-                'type': 'probability',
-                'data': {'probability': max_prob, 'direction': direction}
-            })
-    
-    # Low risk alert
-    if analysis['risk_score'] <= alert_risk_threshold:
-        alert_msg = f"🛡️ {symbol}: Low risk opportunity! (Risk: {analysis['risk_score']})"
-        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
-            st.session_state.alerts.append({
-                'time': current_time,
-                'symbol': symbol,
-                'message': alert_msg,
-                'type': 'risk',
-                'data': {'risk_score': analysis['risk_score']}
-            })
-    
-    # Volume spike alert
-    if data['volume_ratio'] * 100 >= alert_volume_spike:
-        alert_msg = f"📊 {symbol}: Volume spike detected! ({data['volume_ratio']:.1f}x average)"
-        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
-            st.session_state.alerts.append({
-                'time': current_time,
-                'symbol': symbol,
-                'message': alert_msg,
-                'type': 'volume',
-                'data': {'volume_ratio': data['volume_ratio']}
-            })
-    
-    # Support/Resistance alert
-    current_price = data['current_price']
-    if abs(current_price - data['support']) / current_price < 0.01:
-        alert_msg = f"💪 {symbol}: Near support level! (${data['support']:.2f})"
-        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
-            st.session_state.alerts.append({
-                'time': current_time,
-                'symbol': symbol,
-                'message': alert_msg,
-                'type': 'support',
-                'data': {'support': data['support']}
-            })
-    elif abs(current_price - data['resistance']) / current_price < 0.01:
-        alert_msg = f"🚧 {symbol}: Near resistance level! (${data['resistance']:.2f})"
-        if not any(a['message'] == alert_msg for a in st.session_state.alerts[-10:]):
-            st.session_state.alerts.append({
-                'time': current_time,
-                'symbol': symbol,
-                'message': alert_msg,
-                'type': 'resistance',
-                'data': {'resistance': data['resistance']}
-            })
-
-# Risk level function
-def get_risk_level(score):
-    if score < 20:
-        return "🟢 LOW", "green"
-    elif score < 40:
-        return "🟡 MEDIUM", "orange"
-    elif score < 60:
-        return "🟠 HIGH", "red"
-    else:
-        return "🔴 EXTREME", "darkred"
-
-# Backtesting function
-def run_backtest(symbol, data, strategy_params):
-    """Run a simple backtest on historical data"""
-    if not data or 'price_history' not in data:
-        return None
-    
-    prices = data['price_history']
-    if len(prices) < 10:
-        return None
-    
-    # Simple moving average crossover strategy
-    short_period = strategy_params.get('short_ma', 3)
-    long_period = strategy_params.get('long_ma', 7)
-    
-    positions = []
-    trades = []
-    current_position = None
-    
-    for i in range(long_period, len(prices)):
-        short_ma = np.mean(prices[i-short_period:i])
-        long_ma = np.mean(prices[i-long_period:i])
-        
-        if short_ma > long_ma and current_position != 'long':
-            if current_position == 'short':
-                # Close short
-                trades.append({
-                    'type': 'close_short',
-                    'price': prices[i],
-                    'index': i
-                })
-            # Open long
-            trades.append({
-                'type': 'open_long',
-                'price': prices[i],
-                'index': i
-            })
-            current_position = 'long'
-        elif short_ma < long_ma and current_position != 'short':
-            if current_position == 'long':
-                # Close long
-                trades.append({
-                    'type': 'close_long',
-                    'price': prices[i],
-                    'index': i
-                })
-            # Open short
-            trades.append({
-                'type': 'open_short',
-                'price': prices[i],
-                'index': i
-            })
-            current_position = 'short'
-    
-    # Calculate returns
-    total_return = 0
-    win_trades = 0
-    loss_trades = 0
-    
-    for i in range(0, len(trades)-1, 2):
-        if i+1 < len(trades):
-            entry_trade = trades[i]
-            exit_trade = trades[i+1]
-            
-            if entry_trade['type'] == 'open_long':
-                return_pct = (exit_trade['price'] - entry_trade['price']) / entry_trade['price'] * 100
-            else:  # short
-                return_pct = (entry_trade['price'] - exit_trade['price']) / entry_trade['price'] * 100
-            
-            total_return += return_pct
-            if return_pct > 0:
-                win_trades += 1
-            else:
-                loss_trades += 1
-    
-    total_trades = win_trades + loss_trades
-    win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
-    
-    return {
-        'total_return': total_return,
-        'win_rate': win_rate,
-        'total_trades': total_trades,
-        'win_trades': win_trades,
-        'loss_trades': loss_trades,
-        'trades': trades
-    }
+# End of application
