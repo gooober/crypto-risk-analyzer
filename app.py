@@ -1,3 +1,12 @@
+# Auto-refresh logic
+if auto_refresh:
+    current_time = datetime.now()
+    time_diff = (current_time - st.session_state.last_update).total_seconds()
+    
+    if time_diff >= refresh_rate:
+        st.session_state.last_update = current_time
+        st.rerun()
+
 # Main interface with tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Simple View", "🔬 Advanced View", "📈 Market Overview", "🧪 Backtesting"])
 
@@ -966,15 +975,6 @@ st.set_page_config(
 )
 
 st.title("🚀 Advanced Crypto Trade Analyzer")
-
-# Auto-refresh logic
-if auto_refresh:
-    current_time = datetime.now()
-    time_diff = (current_time - st.session_state.last_update).total_seconds()
-    
-    if time_diff >= refresh_rate:
-        st.session_state.last_update = current_time
-        st.rerun()
 
 # Initialize session state
 if 'last_update' not in st.session_state:
