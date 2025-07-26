@@ -630,6 +630,10 @@ with tab2:
             st.metric("Win Rate", f"{win_rate:.1f}%")
         with portfolio_col3:
             st.metric("Active Trades", str(len(st.session_state.trade_history)))
+        
+        if st.button("🗑️ Clear Portfolio"):
+            st.session_state.trade_history = []
+            st.success("Portfolio cleared!")
 
 # Enhanced footer with comprehensive tips
 st.markdown("---")
