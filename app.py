@@ -768,7 +768,8 @@ with st.expander("ℹ️ About This Advanced Tool"):
     - Keep a trading journal for continuous improvement
     """)
 
-else:
+# Warning for no symbols selected
+if not symbols:
     st.warning("⚠️ Please select at least one symbol to analyze.")
 
 # Add custom CSS for better styling
