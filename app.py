@@ -724,7 +724,228 @@ with tip_tab2:
     - Use for stop loss placement (2-3x ATR)
     - Higher ATR = wider stops needed
     """)
-import streamlit as st
+
+with tip_tab3:
+    st.markdown("""
+    ### 🛡️ Advanced Risk Management
+    
+    **Position Sizing by Risk Score:**
+    - **Risk 0-20**: Up to 15x leverage ✅
+    - **Risk 20-40**: Max 10x leverage ⚠️
+    - **Risk 40-60**: Max 5x leverage 🚨
+    - **Risk 60-80**: Max 3x leverage ⛔
+    - **Risk 80-100**: 1-2x leverage only 🛑
+    
+    **Kelly Criterion for Position Sizing:**
+    - Optimal size = (Win% × Average Win - Loss% × Average Loss) / Average Win
+    - Never risk more than 25% of Kelly suggestion
+    - Reduce size during losing streaks
+    
+    **Stop Loss Strategies:**
+    - **ATR-based**: 2-3x ATR from entry
+    - **Support/Resistance**: Just beyond key levels
+    - **Percentage**: 2-5% depending on leverage
+    - **Time-based**: Exit if no movement in X hours
+    
+    **Take Profit Strategies:**
+    - **Fixed R:R**: 2:1 or 3:1 risk/reward
+    - **Trailing**: Move stop to breakeven at 1R profit
+    - **Partial**: Take 50% at 1R, let rest run
+    - **Resistance-based**: Exit at major levels
+    
+    **Portfolio Management:**
+    - Maximum 2% risk per trade
+    - Maximum 6% total portfolio risk
+    - Correlation check: Avoid similar trades
+    - Rebalance weekly/monthly
+    
+    **Funding Rate Strategy:**
+    - **>0.05%**: Strong short bias (longs overpaying)
+    - **0.02-0.05%**: Moderate short bias
+    - **-0.02-0.02%**: Neutral funding
+    - **-0.05--0.02%**: Moderate long bias
+    - **<-0.05%**: Strong long bias (shorts overpaying)
+    """)
+
+with tip_tab4:
+    st.markdown("""
+    ### 🤖 AI-Enhanced Features
+    
+    **AI Predictions (When Enabled):**
+    - Pattern recognition on price action
+    - Volume trend analysis
+    - Multi-timeframe correlation
+    - Sentiment analysis integration
+    
+    **Order Book Analysis:**
+    - **Imbalance >20%**: Strong directional bias
+    - **Bid walls**: Support levels (buy pressure)
+    - **Ask walls**: Resistance levels (sell pressure)
+    - **Spoofing detection**: Large orders that disappear
+    
+    **Smart Alerts:**
+    - Probability threshold breaches
+    - Risk score improvements
+    - Volume spike detection
+    - Support/resistance approaches
+    - Multiple indicator convergence
+    
+    **Backtesting Features:**
+    - MA Crossover: Classic trend following
+    - RSI Reversal: Mean reversion strategy
+    - Bollinger Bands: Volatility breakout
+    - Custom parameter optimization
+    - Walk-forward analysis
+    
+    **Market Correlation:**
+    - Identify correlated pairs
+    - Diversification opportunities
+    - Risk concentration warnings
+    - Sector rotation signals
+    
+    **Advanced Metrics:**
+    - Sharpe Ratio calculation
+    - Maximum drawdown tracking
+    - Win/loss streak analysis
+    - Risk-adjusted returns
+    """)
+
+# Performance disclaimer
+with st.expander("ℹ️ About This Tool & Disclaimer"):
+    st.markdown("""
+    ### 🚀 Enhanced Features:
+    
+    **📊 Technical Analysis Suite:**
+    - RSI, Stochastic RSI, MACD, Moving Averages (7, 20, 50, 200)
+    - Bollinger Bands, ATR, Support/Resistance levels
+    - Volume analysis and order book data
+    - Real-time price action monitoring
+    
+    **🎯 Advanced Probability Engine:**
+    - Multi-factor signal weighting system
+    - AI-enhanced predictions (optional)
+    - Leverage-adjusted probability calculations
+    - Confidence scoring and signal strength
+    
+    **🔔 Smart Alert System:**
+    - Customizable probability thresholds
+    - Risk-based opportunity alerts
+    - Volume spike notifications
+    - Support/resistance proximity warnings
+    
+    **💼 Portfolio Management:**
+    - Multi-position tracking with real-time P&L
+    - Risk exposure monitoring
+    - Performance analytics and win rate
+    - Trade history with export functionality
+    
+    **🧪 Backtesting Laboratory:**
+    - Multiple strategy templates
+    - Custom parameter optimization
+    - Visual trade representation
+    - Performance metrics calculation
+    
+    **📈 Market Overview:**
+    - Multi-symbol comparison dashboard
+    - Correlation matrix analysis
+    - Market sentiment indicators
+    - Trend identification tools
+    
+    ### ⚠️ Important Disclaimers:
+    
+    **FINANCIAL DISCLAIMER:**
+    - This tool is for educational and informational purposes only
+    - Not financial advice or investment recommendations
+    - Past performance does not guarantee future results
+    - Cryptocurrency trading carries substantial risk of loss
+    
+    **RISK WARNING:**
+    - Never invest more than you can afford to lose
+    - Leveraged trading can result in losses exceeding deposits
+    - Markets can remain irrational longer than you can remain solvent
+    - Technical analysis is not infallible
+    
+    **DATA CONSIDERATIONS:**
+    - Real-time data subject to delays and inaccuracies
+    - API limitations may affect data availability
+    - Calculations based on historical data patterns
+    - Market conditions can change rapidly
+    
+    **BEST PRACTICES:**
+    - Always use stop losses
+    - Start with small position sizes
+    - Test strategies in demo mode first
+    - Keep a trading journal
+    - Continuously educate yourself
+    - Consider fundamental analysis
+    - Monitor global market conditions
+    - Have a clear exit strategy
+    
+    **TECHNICAL NOTES:**
+    - Primary data: Binance Futures API
+    - Fallback: Demo data for testing
+    - Refresh rate: Configurable (10-120s)
+    - Calculations updated in real-time
+    
+    By using this tool, you acknowledge that you understand and accept these risks.
+    """)
+
+# Add version and last update info
+st.caption(f"Version 2.0 Enhanced | Last data update: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
+
+# Warning for no symbols selected
+if not symbols:
+    st.warning("⚠️ Please select at least one symbol from the sidebar to begin analysis.")
+    st.info("💡 Tip: Start with BTC and ETH for major market movements, then add altcoins for diversification.")
+
+# Add custom CSS for better styling
+st.markdown("""
+<style>
+    /* Metric styling */
+    .stMetric > label {
+        font-size: 14px !important;
+        font-weight: bold !important;
+    }
+    
+    .stMetric > div {
+        font-size: 20px !important;
+        font-weight: bold !important;
+    }
+    
+    /* Expander styling */
+    .stExpander > details > summary {
+        font-weight: bold;
+        font-size: 16px;
+    }
+    
+    /* Alert styling */
+    .stAlert {
+        margin: 10px 0;
+        border-radius: 10px;
+    }
+    
+    /* Tab styling */
+    .stTabs > div > div {
+        gap: 24px;
+    }
+    
+    /* Button styling */
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: bold;
+    }
+    
+    /* Dataframe styling */
+    .dataframe {
+        font-size: 14px;
+    }
+    
+    /* Container styling */
+    .main > div {
+        padding-top: 2rem;
+    }
+</style>
+""", unsafe_allow_html=True)import streamlit as st
 import requests
 import time
 import pandas as pd
