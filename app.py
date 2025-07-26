@@ -945,7 +945,9 @@ st.markdown("""
         padding-top: 2rem;
     }
 </style>
-""", unsafe_allow_html=True)import streamlit as st
+""", unsafe_allow_html=True)
+
+# End of applicationimport streamlit as st
 import requests
 import time
 import pandas as pd
