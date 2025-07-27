@@ -13,7 +13,6 @@ import hmac
 from collections import deque
 import warnings
 warnings.filterwarnings('ignore')
-
 # Page configuration
 st.set_page_config(
     page_title="Advanced Crypto Trade Analyzer Pro", 
