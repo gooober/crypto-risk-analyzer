@@ -13,11 +13,11 @@ import hmac
 from collections import deque
 import warnings
 warnings.filterwarnings('ignore')
-            
-            with chart_col2:
-                # Signal strength gauge
-                fig2 = go.Figure()
-                
+
+# Page configuration
+st.set_page_config(
+    page_title="Advanced Crypto Trade Analyzer Pro", 
+    layout="wide",         
                 # Long probability gauge
                 fig2.add_trace(go.Indicator(
                     mode = "gauge+number+delta",
