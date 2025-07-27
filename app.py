@@ -1,4 +1,18 @@
-   st.plotly_chart(fig, use_container_width=True)
+import streamlit as st
+import requests
+import time
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import json
+from typing import Dict, List, Tuple, Optional
+import hashlib
+import hmac
+from collections import deque
+import warnings
+warnings.filterwarnings('ignore')
             
             with chart_col2:
                 # Signal strength gauge
