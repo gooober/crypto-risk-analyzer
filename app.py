@@ -211,6 +211,147 @@ def calculate_probabilities(data, leverage):
         "recommendation": recommendation
     }
 
+# NEW FUNCTION: Generate trading signals for different strategies
+def generate_trading_signals(data, strategy_type="perp"):
+    """Generate specific buy/sell signals for different trading strategies"""
+    
+    signals = {
+        "perp": {},
+        "day_trading": {},
+        "spot": {}
+    }
+    
+    price = data['current_price']
+    change_24h = data['price_change_24h']
+    rsi = data['rsi']
+    macd = data['macd']
+    volume = data['volume']
+    
+    # Perpetual Trading Signals (Higher leverage, shorter timeframe)
+    if strategy_type in ["perp", "all"]:
+        perp_signal = "WAIT"
+        perp_action = None
+        
+        # Strong oversold bounce
+        if rsi < 25 and change_24h < -5:
+            perp_signal = "BUY"
+            perp_action = {
+                "entry": price,
+                "stop_loss": price * 0.98,  # 2% stop loss
+                "take_profit": price * 1.03,  # 3% take profit
+                "leverage": min(10, leverage),
+                "reason": "Oversold bounce setup"
+            }
+        # Strong overbought short
+        elif rsi > 75 and change_24h > 5:
+            perp_signal = "SELL"
+            perp_action = {
+                "entry": price,
+                "stop_loss": price * 1.02,
+                "take_profit": price * 0.97,
+                "leverage": min(10, leverage),
+                "reason": "Overbought reversal setup"
+            }
+        # Momentum breakout
+        elif change_24h > 3 and macd > 0 and rsi < 65:
+            perp_signal = "BUY"
+            perp_action = {
+                "entry": price,
+                "stop_loss": price * 0.97,
+                "take_profit": price * 1.05,
+                "leverage": min(5, leverage),
+                "reason": "Momentum breakout"
+            }
+        
+        signals["perp"] = {
+            "signal": perp_signal,
+            "action": perp_action
+        }
+    
+    # Day Trading Signals (Lower leverage, medium timeframe)
+    if strategy_type in ["day_trading", "all"]:
+        day_signal = "WAIT"
+        day_action = None
+        
+        # Morning dip buy
+        current_hour = datetime.now().hour
+        if 9 <= current_hour <= 11 and change_24h < -2 and rsi < 40:
+            day_signal = "BUY"
+            day_action = {
+                "entry": price,
+                "stop_loss": price * 0.995,  # 0.5% stop loss
+                "take_profit": price * 1.015,  # 1.5% take profit
+                "size": "50%",  # Use 50% of capital
+                "reason": "Morning dip opportunity"
+            }
+        # Trend following
+        elif macd > 0 and rsi > 45 and rsi < 65 and change_24h > 0:
+            day_signal = "BUY"
+            day_action = {
+                "entry": price,
+                "stop_loss": price * 0.99,
+                "take_profit": price * 1.025,
+                "size": "30%",
+                "reason": "Trend continuation"
+            }
+        # Range trading
+        elif 40 < rsi < 60 and abs(change_24h) < 2:
+            if rsi < 45:
+                day_signal = "BUY"
+                day_action = {
+                    "entry": price,
+                    "stop_loss": price * 0.995,
+                    "take_profit": price * 1.01,
+                    "size": "25%",
+                    "reason": "Range trading - Buy low"
+                }
+            elif rsi > 55:
+                day_signal = "SELL"
+                day_action = {
+                    "entry": price,
+                    "stop_loss": price * 1.005,
+                    "take_profit": price * 0.99,
+                    "size": "25%",
+                    "reason": "Range trading - Sell high"
+                }
+        
+        signals["day_trading"] = {
+            "signal": day_signal,
+            "action": day_action
+        }
+    
+    # Spot Trading Signals (No leverage, longer timeframe)
+    if strategy_type in ["spot", "all"]:
+        spot_signal = "WAIT"
+        spot_action = None
+        
+        # Deep value buy
+        if rsi < 30 and change_24h < -10:
+            spot_signal = "STRONG BUY"
+            spot_action = {
+                "entry": price,
+                "target_1": price * 1.10,  # 10% target
+                "target_2": price * 1.20,  # 20% target
+                "size": "10-20%",
+                "reason": "Deep value opportunity"
+            }
+        # DCA opportunity
+        elif rsi < 40 and change_24h < -5:
+            spot_signal = "BUY"
+            spot_action = {
+                "entry": price,
+                "target": price * 1.15,
+                "size": "5-10%",
+                "reason": "DCA opportunity"
+            }
+        
+        signals["spot"] = {
+            "signal": spot_signal,
+            "action": spot_action
+        }
+    
+    return signals
+
 # Check alerts
 def check_alerts(symbol, analysis):
     """Check if alerts should be triggered"""
@@ -236,6 +377,17 @@ tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📈 Charts", "📋 Portfolio"])
 with tab1:
     st.header("📊 Trading Dashboard")
     
+    # Add strategy selector
+    strategy_col1, strategy_col2 = st.columns([3, 1])
+    with strategy_col1:
+        selected_strategy = st.radio(
+            "Trading Strategy:",
+            ["Perpetual (Futures)", "Day Trading", "Spot Trading", "All Strategies"],
+            horizontal=True
+        )
+    with strategy_col2:
+        st.metric("Active Signals", "🟢 Live", delta=None)
+    
     # Display alerts
     if st.session_state.alerts:
         with st.expander("🔔 Recent Alerts", expanded=True):
@@ -253,6 +405,15 @@ with tab1:
                 data = get_enhanced_data(symbol)
                 analysis = calculate_probabilities(data, leverage)
                 check_alerts(symbol, analysis)
+                
+                # Generate signals based on selected strategy
+                strategy_map = {
+                    "Perpetual (Futures)": "perp",
+                    "Day Trading": "day_trading",
+                    "Spot Trading": "spot",
+                    "All Strategies": "all"
+                }
+                signals = generate_trading_signals(data, strategy_map[selected_strategy])
                 
                 st.subheader(f"🪙 {symbol}")
                 st.caption(f"📡 {data['data_source']}")
@@ -281,23 +442,67 @@ with tab1:
                     macd_emoji = "🟢" if data['macd'] > 0 else "🔴"
                     st.write(f"{macd_emoji} MACD: {data['macd']:.2f}")
                 
-                # Trading signals
-                st.write("**🎯 Trading Signals**")
+                # Show specific signals based on strategy
+                if selected_strategy == "All Strategies":
+                    # Show all signals
+                    for strat_name, strat_data in signals.items():
+                        if strat_data['signal'] != "WAIT":
+                            st.success(f"**{strat_name.upper()} Signal: {strat_data['signal']}**")
+                            if strat_data['action']:
+                                with st.expander(f"📋 {strat_name.title()} Details", expanded=True):
+                                    action = strat_data['action']
+                                    st.write(f"**Reason:** {action['reason']}")
+                                    st.write(f"**Entry:** ${action.get('entry', price):.2f}")
+                                    if 'stop_loss' in action:
+                                        st.write(f"**Stop Loss:** ${action['stop_loss']:.2f}")
+                                    if 'take_profit' in action:
+                                        st.write(f"**Take Profit:** ${action['take_profit']:.2f}")
+                                    if 'leverage' in action:
+                                        st.write(f"**Suggested Leverage:** {action['leverage']}x")
+                                    if 'size' in action:
+                                        st.write(f"**Position Size:** {action['size']}")
+                else:
+                    # Show selected strategy signal
+                    strat_key = strategy_map[selected_strategy]
+                    signal_data = signals[strat_key]
+                    
+                    if signal_data['signal'] != "WAIT":
+                        st.success(f"**🎯 {signal_data['signal']} Signal Active!**")
+                        if signal_data['action']:
+                            action = signal_data['action']
+                            st.write(f"**Reason:** {action['reason']}")
+                            
+                            # Display action details in columns
+                            act_col1, act_col2 = st.columns(2)
+                            with act_col1:
+                                st.write(f"**Entry:** ${action.get('entry', data['current_price']):.2f}")
+                                if 'stop_loss' in action:
+                                    sl_pct = ((action['stop_loss'] / action['entry']) - 1) * 100
+                                    st.write(f"**Stop Loss:** ${action['stop_loss']:.2f} ({sl_pct:+.1f}%)")
+                            with act_col2:
+                                if 'take_profit' in action:
+                                    tp_pct = ((action['take_profit'] / action['entry']) - 1) * 100
+                                    st.write(f"**Take Profit:** ${action['take_profit']:.2f} ({tp_pct:+.1f}%)")
+                                if 'leverage' in action:
+                                    st.write(f"**Leverage:** {action['leverage']}x")
+                                elif 'size' in action:
+                                    st.write(f"**Size:** {action['size']}")
+                    else:
+                        st.info("⏳ Waiting for signal...")
                 
-                # Long probability
-                st.write(f"📈 Long: {analysis['long_prob']}%")
-                st.progress(analysis['long_prob'] / 100)
-                
-                # Short probability
-                st.write(f"📉 Short: {analysis['short_prob']}%")
-                st.progress(analysis['short_prob'] / 100)
-                
-                # Risk level
-                risk_emoji = "🟢" if analysis['risk_score'] < 30 else "🟡" if analysis['risk_score'] < 60 else "🔴"
-                st.write(f"**⚠️ Risk**: {risk_emoji} {analysis['risk_score']:.0f}%")
-                
-                # Recommendation
-                st.info(f"**Signal**: {analysis['recommendation']}")
+                # Traditional probability display (collapsed by default)
+                with st.expander("📊 Probability Analysis"):
+                    # Long probability
+                    st.write(f"📈 Long: {analysis['long_prob']}%")
+                    st.progress(analysis['long_prob'] / 100)
+                    
+                    # Short probability
+                    st.write(f"📉 Short: {analysis['short_prob']}%")
+                    st.progress(analysis['short_prob'] / 100)
+                    
+                    # Risk level
+                    risk_emoji = "🟢" if analysis['risk_score'] < 30 else "🟡" if analysis['risk_score'] < 60 else "🔴"
+                    st.write(f"**⚠️ Risk**: {risk_emoji} {analysis['risk_score']:.0f}%")
                 
                 st.divider()
 
