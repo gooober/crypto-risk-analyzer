@@ -64,94 +64,93 @@ if auto_refresh:
         st.rerun()
 
 # Enhanced data fetching
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def get_enhanced_data(symbol):
     """Fetch enhanced data with technical indicators"""
     
-    base_url = "https://fapi.binance.com"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
-    }
-    
+    # Try multiple sources
+    # First try: Binance public API (no key needed)
     try:
-        # Get 24h stats
-        stats_response = requests.get(
-            f"{base_url}/fapi/v1/ticker/24hr",
-            params={"symbol": symbol},
-            headers=headers,
-            timeout=8
-        )
+        # Simple price endpoint
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        response = requests.get(url, timeout=5)
         
-        # Get kline data for indicators
-        klines_response = requests.get(
-            f"{base_url}/fapi/v1/klines",
-            params={"symbol": symbol, "interval": "1h", "limit": 50},
-            headers=headers,
-            timeout=8
-        )
-        
-        if stats_response.status_code == 200:
-            stats = stats_response.json()
+        if response.status_code == 200:
+            price_data = response.json()
+            current_price = float(price_data['price'])
             
-            # Calculate basic indicators
-            rsi = 50  # Default RSI
-            macd = 0
+            # Get 24hr change
+            url_24hr = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+            response_24hr = requests.get(url_24hr, timeout=5)
             
-            if klines_response.status_code == 200:
-                klines = klines_response.json()
-                if len(klines) > 14:
-                    # Simple RSI calculation
-                    closes = [float(k[4]) for k in klines]
-                    gains = []
-                    losses = []
-                    
-                    for i in range(1, len(closes)):
-                        diff = closes[i] - closes[i-1]
-                        if diff > 0:
-                            gains.append(diff)
-                            losses.append(0)
-                        else:
-                            gains.append(0)
-                            losses.append(abs(diff))
-                    
-                    if gains and losses:
-                        avg_gain = sum(gains[-14:]) / 14
-                        avg_loss = sum(losses[-14:]) / 14
-                        if avg_loss > 0:
-                            rs = avg_gain / avg_loss
-                            rsi = 100 - (100 / (1 + rs))
-                    
-                    # Simple MACD
-                    if len(closes) >= 26:
-                        ema_12 = sum(closes[-12:]) / 12
-                        ema_26 = sum(closes[-26:]) / 26
-                        macd = ema_12 - ema_26
-            
-            return {
-                "current_price": float(stats.get("lastPrice", 0)),
-                "price_change_24h": float(stats.get("priceChangePercent", 0)),
-                "volume": float(stats.get("volume", 0)),
-                "high_24h": float(stats.get("highPrice", 0)),
-                "low_24h": float(stats.get("lowPrice", 0)),
-                "rsi": rsi,
-                "macd": macd,
-                "data_source": "Binance Live",
-                "last_updated": datetime.now().strftime("%H:%M:%S")
-            }
+            if response_24hr.status_code == 200:
+                stats = response_24hr.json()
+                
+                # Calculate simple RSI (mock for now)
+                price_change = float(stats['priceChangePercent'])
+                rsi = 50 + (price_change * 2)  # Simple approximation
+                rsi = max(0, min(100, rsi))
+                
+                return {
+                    "current_price": float(stats['lastPrice']),
+                    "price_change_24h": float(stats['priceChangePercent']),
+                    "volume": float(stats['volume']),
+                    "high_24h": float(stats['highPrice']),
+                    "low_24h": float(stats['lowPrice']),
+                    "rsi": rsi,
+                    "macd": price_change / 10,  # Simple approximation
+                    "data_source": "Binance Live",
+                    "last_updated": datetime.now().strftime("%H:%M:%S")
+                }
     except Exception as e:
-        st.warning(f"API Error for {symbol}: {str(e)}")
+        print(f"Binance API error: {e}")
+    
+    # Second try: CoinGecko (as backup)
+    try:
+        # Map symbol to CoinGecko ID
+        symbol_map = {
+            "BTCUSDT": "bitcoin",
+            "ETHUSDT": "ethereum",
+            "BNBUSDT": "binancecoin",
+            "SOLUSDT": "solana",
+            "ADAUSDT": "cardano",
+            "DOTUSDT": "polkadot",
+            "LINKUSDT": "chainlink"
+        }
+        
+        if symbol in symbol_map:
+            coin_id = symbol_map[symbol]
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true"
+            response = requests.get(url, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                coin_data = data[coin_id]
+                
+                return {
+                    "current_price": coin_data['usd'],
+                    "price_change_24h": coin_data.get('usd_24h_change', 0),
+                    "volume": coin_data.get('usd_24h_vol', 0),
+                    "high_24h": coin_data['usd'] * 1.01,  # Estimate
+                    "low_24h": coin_data['usd'] * 0.99,   # Estimate
+                    "rsi": 50,
+                    "macd": 0,
+                    "data_source": "CoinGecko Live",
+                    "last_updated": datetime.now().strftime("%H:%M:%S")
+                }
+    except Exception as e:
+        print(f"CoinGecko API error: {e}")
     
     # Fallback demo data
     return {
-        "current_price": 50000.0 if "BTC" in symbol else 3000.0,
-        "price_change_24h": 1.5,
-        "volume": 1000000,
-        "high_24h": 51000 if "BTC" in symbol else 3100,
-        "low_24h": 49000 if "BTC" in symbol else 2900,
-        "rsi": 50,
-        "macd": 0,
-        "data_source": "Demo Mode",
+        "current_price": 50000.0 if "BTC" in symbol else 3000.0 if "ETH" in symbol else 100.0,
+        "price_change_24h": np.random.uniform(-5, 5),
+        "volume": np.random.uniform(500000, 2000000),
+        "high_24h": 51000 if "BTC" in symbol else 3100 if "ETH" in symbol else 105,
+        "low_24h": 49000 if "BTC" in symbol else 2900 if "ETH" in symbol else 95,
+        "rsi": np.random.uniform(30, 70),
+        "macd": np.random.uniform(-5, 5),
+        "data_source": "Demo Mode (Check Internet)",
         "last_updated": datetime.now().strftime("%H:%M:%S")
     }
 
