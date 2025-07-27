@@ -113,46 +113,131 @@ if auto_refresh:
 def get_enhanced_data(symbol):
     """Fetch enhanced data with technical indicators"""
     
-    # Try multiple sources
-    # First try: Binance public API (no key needed)
+    # Try multiple sources in order of preference
+    price_data = None
+    attempts = []
+    
+    # Method 1: Binance Spot API (most reliable)
     try:
-        # Simple price endpoint
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        response = requests.get(url, timeout=5)
+        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+        response = requests.get(url, timeout=3)
         
         if response.status_code == 200:
-            price_data = response.json()
-            current_price = float(price_data['price'])
+            stats = response.json()
             
-            # Get 24hr change
-            url_24hr = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
-            response_24hr = requests.get(url_24hr, timeout=5)
+            # Get additional kline data for better indicators
+            kline_url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
+            kline_response = requests.get(kline_url, timeout=3)
             
-            if response_24hr.status_code == 200:
-                stats = response_24hr.json()
-                
-                # Calculate simple RSI (mock for now)
-                price_change = float(stats['priceChangePercent'])
-                rsi = 50 + (price_change * 2)  # Simple approximation
-                rsi = max(0, min(100, rsi))
-                
-                return {
-                    "current_price": float(stats['lastPrice']),
-                    "price_change_24h": float(stats['priceChangePercent']),
-                    "volume": float(stats['volume']),
-                    "high_24h": float(stats['highPrice']),
-                    "low_24h": float(stats['lowPrice']),
-                    "rsi": rsi,
-                    "macd": price_change / 10,  # Simple approximation
-                    "data_source": "Binance Live",
-                    "last_updated": datetime.now().strftime("%H:%M:%S")
-                }
+            rsi = 50
+            macd = 0
+            
+            if kline_response.status_code == 200:
+                klines = kline_response.json()
+                if len(klines) > 14:
+                    # Calculate proper RSI
+                    closes = [float(k[4]) for k in klines]
+                    
+                    # RSI calculation
+                    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+                    gains = [d if d > 0 else 0 for d in deltas]
+                    losses = [-d if d < 0 else 0 for d in deltas]
+                    
+                    avg_gain = sum(gains[-14:]) / 14
+                    avg_loss = sum(losses[-14:]) / 14
+                    
+                    if avg_loss > 0:
+                        rs = avg_gain / avg_loss
+                        rsi = 100 - (100 / (1 + rs))
+                    
+                    # Simple MACD
+                    if len(closes) >= 26:
+                        ema_12 = sum(closes[-12:]) / 12
+                        ema_26 = sum(closes[-26:]) / 26
+                        macd = ((ema_12 - ema_26) / ema_26) * 100  # As percentage
+            
+            price_data = {
+                "current_price": float(stats['lastPrice']),
+                "price_change_24h": float(stats['priceChangePercent']),
+                "volume": float(stats['volume']),
+                "high_24h": float(stats['highPrice']),
+                "low_24h": float(stats['lowPrice']),
+                "rsi": round(rsi, 2),
+                "macd": round(macd, 2),
+                "data_source": "Binance Spot",
+                "last_updated": datetime.now().strftime("%H:%M:%S"),
+                "bid": float(stats.get('bidPrice', stats['lastPrice'])),
+                "ask": float(stats.get('askPrice', stats['lastPrice'])),
+                "spread": round((float(stats.get('askPrice', stats['lastPrice'])) - float(stats.get('bidPrice', stats['lastPrice']))) / float(stats['lastPrice']) * 100, 4)
+            }
+            attempts.append("Binance Spot: Success")
+            return price_data
+        else:
+            attempts.append(f"Binance Spot: HTTP {response.status_code}")
     except Exception as e:
-        print(f"Binance API error: {e}")
+        attempts.append(f"Binance Spot: {str(e)[:30]}")
     
-    # Second try: CoinGecko (as backup)
+    # Method 2: Binance US API (backup)
     try:
-        # Map symbol to CoinGecko ID
+        url = f"https://api.binance.us/api/v3/ticker/24hr?symbol={symbol}"
+        response = requests.get(url, timeout=3)
+        
+        if response.status_code == 200:
+            stats = response.json()
+            
+            price_data = {
+                "current_price": float(stats['lastPrice']),
+                "price_change_24h": float(stats['priceChangePercent']),
+                "volume": float(stats['volume']),
+                "high_24h": float(stats['highPrice']),
+                "low_24h": float(stats['lowPrice']),
+                "rsi": 50,  # Default
+                "macd": 0,
+                "data_source": "Binance US",
+                "last_updated": datetime.now().strftime("%H:%M:%S"),
+                "bid": float(stats.get('bidPrice', stats['lastPrice'])),
+                "ask": float(stats.get('askPrice', stats['lastPrice'])),
+                "spread": 0
+            }
+            attempts.append("Binance US: Success")
+            return price_data
+    except Exception as e:
+        attempts.append(f"Binance US: {str(e)[:30]}")
+    
+    # Method 3: CryptoCompare API
+    try:
+        # Extract base currency from symbol (remove USDT)
+        base_symbol = symbol.replace('USDT', '')
+        url = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={base_symbol}&tsyms=USD"
+        response = requests.get(url, timeout=3)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'DISPLAY' in data and base_symbol in data['DISPLAY']:
+                raw_data = data['RAW'][base_symbol]['USD']
+                display_data = data['DISPLAY'][base_symbol]['USD']
+                
+                price_data = {
+                    "current_price": float(raw_data['PRICE']),
+                    "price_change_24h": float(raw_data['CHANGEPCT24HOUR']),
+                    "volume": float(raw_data['VOLUME24HOUR']),
+                    "high_24h": float(raw_data['HIGH24HOUR']),
+                    "low_24h": float(raw_data['LOW24HOUR']),
+                    "rsi": 50,
+                    "macd": 0,
+                    "data_source": "CryptoCompare",
+                    "last_updated": datetime.now().strftime("%H:%M:%S"),
+                    "bid": float(raw_data['PRICE']) * 0.999,  # Estimate
+                    "ask": float(raw_data['PRICE']) * 1.001,  # Estimate
+                    "spread": 0.2  # Estimate
+                }
+                attempts.append("CryptoCompare: Success")
+                return price_data
+    except Exception as e:
+        attempts.append(f"CryptoCompare: {str(e)[:30]}")
+    
+    # Method 4: CoinGecko (very reliable but rate limited)
+    try:
         symbol_map = {
             "BTCUSDT": "bitcoin",
             "ETHUSDT": "ethereum",
@@ -165,28 +250,37 @@ def get_enhanced_data(symbol):
         
         if symbol in symbol_map:
             coin_id = symbol_map[symbol]
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true"
+            url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false"
             response = requests.get(url, timeout=5)
             
             if response.status_code == 200:
                 data = response.json()
-                coin_data = data[coin_id]
+                market_data = data['market_data']
                 
-                return {
-                    "current_price": coin_data['usd'],
-                    "price_change_24h": coin_data.get('usd_24h_change', 0),
-                    "volume": coin_data.get('usd_24h_vol', 0),
-                    "high_24h": coin_data['usd'] * 1.01,  # Estimate
-                    "low_24h": coin_data['usd'] * 0.99,   # Estimate
+                price_data = {
+                    "current_price": float(market_data['current_price']['usd']),
+                    "price_change_24h": float(market_data['price_change_percentage_24h']),
+                    "volume": float(market_data['total_volume']['usd']),
+                    "high_24h": float(market_data['high_24h']['usd']),
+                    "low_24h": float(market_data['low_24h']['usd']),
                     "rsi": 50,
                     "macd": 0,
-                    "data_source": "CoinGecko Live",
-                    "last_updated": datetime.now().strftime("%H:%M:%S")
+                    "data_source": "CoinGecko",
+                    "last_updated": datetime.now().strftime("%H:%M:%S"),
+                    "bid": float(market_data['current_price']['usd']) * 0.999,
+                    "ask": float(market_data['current_price']['usd']) * 1.001,
+                    "spread": 0.2
                 }
+                attempts.append("CoinGecko: Success")
+                return price_data
     except Exception as e:
-        print(f"CoinGecko API error: {e}")
+        attempts.append(f"CoinGecko: {str(e)[:30]}")
     
-    # Fallback demo data
+    # If all methods fail, show what went wrong
+    error_msg = " | ".join(attempts)
+    st.warning(f"All price sources failed for {symbol}: {error_msg}")
+    
+    # Return demo data as last resort
     return {
         "current_price": 50000.0 if "BTC" in symbol else 3000.0 if "ETH" in symbol else 100.0,
         "price_change_24h": np.random.uniform(-5, 5),
@@ -195,8 +289,11 @@ def get_enhanced_data(symbol):
         "low_24h": 49000 if "BTC" in symbol else 2900 if "ETH" in symbol else 95,
         "rsi": np.random.uniform(30, 70),
         "macd": np.random.uniform(-5, 5),
-        "data_source": "Demo Mode (Check Internet)",
-        "last_updated": datetime.now().strftime("%H:%M:%S")
+        "data_source": f"Demo Mode ({len(attempts)} sources failed)",
+        "last_updated": datetime.now().strftime("%H:%M:%S"),
+        "bid": 0,
+        "ask": 0,
+        "spread": 0
     }
 
 # Calculate trading probabilities
@@ -469,16 +566,24 @@ tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📈 Charts", "📋 Portfolio"])
 with tab1:
     st.header("📊 Trading Dashboard")
     
-    # Add strategy selector
-    strategy_col1, strategy_col2 = st.columns([3, 1])
-    with strategy_col1:
+    # Connection status
+    col_status1, col_status2, col_status3 = st.columns([2, 1, 1])
+    with col_status1:
         selected_strategy = st.radio(
             "Trading Strategy:",
             ["Perpetual (Futures)", "Day Trading", "Spot Trading", "All Strategies"],
             horizontal=True
         )
-    with strategy_col2:
-        st.metric("Active Signals", "🟢 Live", delta=None)
+    with col_status2:
+        # Check connection by testing one symbol
+        if symbols:
+            test_data = get_enhanced_data(symbols[0])
+            if "Demo Mode" not in test_data['data_source']:
+                st.metric("Status", "🟢 Live", delta="Connected")
+            else:
+                st.metric("Status", "🟡 Demo", delta="Check connection")
+    with col_status3:
+        st.metric("Refresh", f"{int((datetime.now() - st.session_state.last_update).total_seconds())}s ago", delta=None)
     
     # Display alerts
     if st.session_state.alerts:
@@ -488,7 +593,7 @@ with tab1:
     
     # Display symbols
     if symbols:
-        st.caption(f"Last updated: {st.session_state.last_update.strftime('%H:%M:%S')}")
+        st.caption(f"Last updated: {st.session_state.last_update.strftime('%H:%M:%S')} | Auto-refresh {'ON' if auto_refresh else 'OFF'}")
         
         cols = st.columns(min(len(symbols), 3))
         
@@ -515,9 +620,17 @@ with tab1:
                     save_signal_to_history(symbol, strategy_map[selected_strategy], signals[strategy_map[selected_strategy]])
                 
                 st.subheader(f"🪙 {symbol}")
-                st.caption(f"📡 {data['data_source']}")
                 
-                # Price metrics
+                # Show data source and spread
+                source_col1, source_col2 = st.columns(2)
+                with source_col1:
+                    source_emoji = "🟢" if "Live" in data['data_source'] else "🟡"
+                    st.caption(f"{source_emoji} {data['data_source']}")
+                with source_col2:
+                    if 'spread' in data and data['spread'] > 0:
+                        st.caption(f"Spread: {data['spread']:.3f}%")
+                
+                # Price metrics with bid/ask
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric(
@@ -525,11 +638,15 @@ with tab1:
                         f"${data['current_price']:,.2f}",
                         delta=f"{data['price_change_24h']:+.2f}%"
                     )
+                    if 'bid' in data and data['bid'] > 0:
+                        st.caption(f"Bid: ${data['bid']:,.2f}")
                 with col2:
                     st.metric(
                         "Volume",
                         f"${data['volume']/1e6:.1f}M"
                     )
+                    if 'ask' in data and data['ask'] > 0:
+                        st.caption(f"Ask: ${data['ask']:,.2f}")
                 
                 # Indicators
                 st.write("**📊 Indicators**")
