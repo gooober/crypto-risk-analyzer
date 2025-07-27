@@ -26,6 +26,10 @@ if 'alerts' not in st.session_state:
     st.session_state.alerts = []
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
+if 'price_alerts' not in st.session_state:
+    st.session_state.price_alerts = {}
+if 'signal_history' not in st.session_state:
+    st.session_state.signal_history = []
 
 # Sidebar configuration
 with st.sidebar:
@@ -53,6 +57,47 @@ with st.sidebar:
     
     if st.button("🗑️ Clear Alerts"):
         st.session_state.alerts = []
+    
+    # NEW: Price Alerts Section
+    st.header("🎯 Price Alerts")
+    
+    with st.expander("Set Price Alert", expanded=False):
+        alert_symbol = st.selectbox("Symbol:", symbols if symbols else ["BTCUSDT"], key="alert_symbol")
+        alert_type = st.radio("Alert when price goes:", ["Above", "Below"], horizontal=True, key="alert_type")
+        alert_price = st.number_input(
+            f"Alert price ({alert_type.lower()}):", 
+            min_value=0.0, 
+            value=50000.0 if "BTC" in alert_symbol else 3000.0,
+            key="alert_price"
+        )
+        
+        if st.button("➕ Add Alert", type="primary"):
+            # Initialize alerts for symbol if needed
+            if alert_symbol not in st.session_state.price_alerts:
+                st.session_state.price_alerts[alert_symbol] = {}
+            
+            # Add the alert
+            alert_id = f"{alert_symbol}_{alert_type.lower()}_{alert_price}_{datetime.now().timestamp()}"
+            st.session_state.price_alerts[alert_symbol][alert_id] = {
+                'type': alert_type.lower(),
+                'price': alert_price,
+                'created': datetime.now()
+            }
+            st.success(f"Alert set for {alert_symbol} {alert_type.lower()} ${alert_price:.2f}")
+    
+    # Show active alerts
+    if any(st.session_state.price_alerts.values()):
+        st.write("**Active Price Alerts:**")
+        for symbol, alerts in st.session_state.price_alerts.items():
+            for alert_id, alert in alerts.items():
+                st.write(f"• {symbol} {alert['type']} ${alert['price']:.2f}")
+    
+    # NEW: Signal History
+    if st.button("📜 View Signal History"):
+        if st.session_state.signal_history:
+            st.write(f"Last {min(5, len(st.session_state.signal_history))} signals:")
+            for signal in st.session_state.signal_history[-5:]:
+                st.write(f"• {signal['timestamp'].strftime('%H:%M')} - {signal['symbol']} {signal['signal']}")
 
 # Auto-refresh logic
 if auto_refresh:
@@ -371,6 +416,53 @@ def check_alerts(symbol, analysis):
                 'message': alert_msg
             })
 
+# NEW FUNCTION: Check price alerts
+def check_price_alerts(symbol, current_price):
+    """Check if any price alerts should trigger"""
+    if symbol not in st.session_state.price_alerts:
+        return
+    
+    alerts_to_remove = []
+    
+    for alert_id, alert in st.session_state.price_alerts[symbol].items():
+        triggered = False
+        
+        if alert['type'] == 'above' and current_price >= alert['price']:
+            triggered = True
+            alert_msg = f"🔔 {symbol} hit ${alert['price']:.2f} (Above alert)"
+        elif alert['type'] == 'below' and current_price <= alert['price']:
+            triggered = True
+            alert_msg = f"🔔 {symbol} hit ${alert['price']:.2f} (Below alert)"
+        
+        if triggered:
+            st.session_state.alerts.append({
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'symbol': symbol,
+                'message': alert_msg,
+                'type': 'price_alert'
+            })
+            alerts_to_remove.append(alert_id)
+            
+            # Show notification
+            st.balloons()
+    
+    # Remove triggered alerts
+    for alert_id in alerts_to_remove:
+        del st.session_state.price_alerts[symbol][alert_id]
+
+# NEW FUNCTION: Save signal to history
+def save_signal_to_history(symbol, signal_type, signal_data):
+    """Save trading signals to history for tracking"""
+    if signal_data['signal'] != "WAIT":
+        st.session_state.signal_history.append({
+            'timestamp': datetime.now(),
+            'symbol': symbol,
+            'type': signal_type,
+            'signal': signal_data['signal'],
+            'action': signal_data['action'],
+            'price': signal_data['action']['entry'] if signal_data['action'] else None
+        })
+
 # Main interface
 tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📈 Charts", "📋 Portfolio"])
 
@@ -406,6 +498,9 @@ with tab1:
                 analysis = calculate_probabilities(data, leverage)
                 check_alerts(symbol, analysis)
                 
+                # Check price alerts
+                check_price_alerts(symbol, data['current_price'])
+                
                 # Generate signals based on selected strategy
                 strategy_map = {
                     "Perpetual (Futures)": "perp",
@@ -414,6 +509,10 @@ with tab1:
                     "All Strategies": "all"
                 }
                 signals = generate_trading_signals(data, strategy_map[selected_strategy])
+                
+                # Save signals to history
+                if selected_strategy != "All Strategies":
+                    save_signal_to_history(symbol, strategy_map[selected_strategy], signals[strategy_map[selected_strategy]])
                 
                 st.subheader(f"🪙 {symbol}")
                 st.caption(f"📡 {data['data_source']}")
