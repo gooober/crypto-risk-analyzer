@@ -352,4 +352,54 @@ with tabs[0]:
     for sym in symbols:
         data = get_enhanced_data(sym)
         buy_vol, sell_vol, imbalance = get_order_flow(sym)
-        st
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Price", f"{data['price']:.2f}" if not np.isnan(data['price']) else "N/A")
+        c2.metric("VWAP", f"{data['vwap']:.2f}" if not np.isnan(data['vwap']) else "N/A")
+        c3.metric("SuperTrend", f"{data['supertrend'][-1]:.2f}" if not np.isnan(data['supertrend'][-1]) else "N/A")
+        c4.metric("Signal", data['signal'])
+        st.write(f"Stop Loss: {data['stop_loss']:.2f}" if not np.isnan(data['stop_loss']) else "Stop Loss: N/A")
+        st.write(f"ATR(14): {data['atr']:.2f}" if not np.isnan(data['atr']) else "ATR(14): N/A")
+        st.write(f"Order Flow Imb.: {imbalance:.2f}%" if not np.isnan(imbalance) else "Order Flow Imb.: N/A")
+        st.write(f"Trend (1h): {data['trend_1h']} | Trend (5m): {data['trend_5m']}")
+        st.progress((imbalance+100)//2 if not np.isnan(imbalance) else 0, text="Buy/Sell Flow (green = more buys, red = more sells)")
+
+        # Plot price, vwap, supertrend
+        if len(data['price_series']) > 1:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=list(range(len(data['price_series'][-30:]))), y=data['price_series'][-30:], name="Price"))
+            fig.add_trace(go.Scatter(x=list(range(len(data['price_series'][-30:]))), y=[data['vwap']]*min(len(data['price_series']),30), name="VWAP", line=dict(dash="dash")))
+            if len(data['supertrend']) >= 30:
+                fig.add_trace(go.Scatter(x=list(range(len(data['supertrend'][-30:]))), y=data['supertrend'][-30:], name="SuperTrend"))
+            st.plotly_chart(fig, use_container_width=True)
+        if ai_enabled and not np.isnan(data['price']) and not np.isnan(data['vwap']) and not np.isnan(data['supertrend'][-1]) and not np.isnan(data['stop_loss']):
+            ai_msg = ai_trade_commentary(
+                sym, data['price'], data['vwap'], data['supertrend'][-1], data['signal'],
+                data['stop_loss'], default_balance, leverage, default_balance*max_risk_per_trade/100
+            )
+            st.info(ai_msg)
+        st.divider()
+
+with tabs[1]:
+    st.markdown("### Trade Planner")
+    position_size = default_balance * max_risk_per_trade / 100
+    st.write(f"Max $ risk per trade: ${position_size:.2f}")
+    st.write("Trade logic, targets, and signals shown in dashboard.")
+    st.write("Journal trades in the next tab.")
+
+with tabs[2]:
+    st.markdown("### Journal & Stats")
+    st.write(get_stats())
+    if st.session_state.journal:
+        df = pd.DataFrame(st.session_state.journal)
+        st.dataframe(df)
+
+with tabs[3]:
+    st.markdown("### News")
+    for n in get_news():
+        st.write(f"- {n}")
+
+# Auto-refresh
+current_time = datetime.now()
+if (current_time - st.session_state.get("last_update", datetime.now())).total_seconds() >= refresh_rate:
+    st.session_state.last_update = current_time
+    st.rerun()
