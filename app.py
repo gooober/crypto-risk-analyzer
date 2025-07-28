@@ -6,7 +6,6 @@ from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Page config
 st.set_page_config(
     page_title="Intraday Crypto Trade Risk Analyzer",
     layout="wide",
@@ -15,7 +14,6 @@ st.set_page_config(
 
 st.title("🚀 Intraday Crypto Trade Risk Analyzer")
 
-# --- Session State Init ---
 if 'last_update' not in st.session_state:
     st.session_state.last_update = datetime.now()
 if 'data_cache' not in st.session_state:
@@ -29,7 +27,6 @@ if 'price_alerts' not in st.session_state:
 if 'signal_history' not in st.session_state:
     st.session_state.signal_history = []
 
-# --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Settings")
     symbols = st.multiselect(
@@ -90,7 +87,6 @@ with st.sidebar:
             for sig in history[-5:]:
                 st.write(f"• {sig['timestamp'].strftime('%H:%M')} - {sig['symbol']} {sig['signal']}")
 
-# --- Indicator helpers ---
 def calculate_vwap(klines):
     volumes = [float(k[5]) for k in klines]
     typicals = [ (float(k[2]) + float(k[3]) + float(k[4]))/3 for k in klines ]
@@ -100,59 +96,46 @@ def calculate_vwap(klines):
     vwap = cum_tp_vol / cum_vol if cum_vol else np.nan
     return vwap, vwap * 1.002, vwap * 0.998
 
-def calculate_order_flow_imbalance(trades):
-    buy_vol, sell_vol = 0.0, 0.0
-    for trade in trades:
-        qty = float(trade.get('qty', trade.get('quantity', 0)))
-        # isBuyerMaker True indicates seller initiated
-        if trade.get('isBuyerMaker', False):
-            sell_vol += qty
-        else:
-            buy_vol += qty
-    total = buy_vol + sell_vol
-    imbalance = (buy_vol - sell_vol) / total * 100 if total else 0.0
-    return round(imbalance,2), round(buy_vol,2), round(sell_vol,2)
+def calculate_rsi(closes, period=14):
+    closes = np.array(closes)
+    deltas = np.diff(closes)
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    avg_gain = gains[-period:].mean()
+    avg_loss = losses[-period:].mean() if losses[-period:].mean() > 0 else 1
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-# --- Bybit Data Fetching ---
-@st.cache_data(ttl=5)
+def calculate_macd(closes, fast=12, slow=26):
+    closes = np.array(closes)
+    if len(closes) < slow:
+        return np.nan
+    ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean().iloc[-1]
+    ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean().iloc[-1]
+    return (ema_fast - ema_slow) / ema_slow * 100
+
 def get_enhanced_data(symbol):
+    okx_symbol = symbol.replace("USDT", "-USDT")
+    kraken_map = {
+        "BTCUSDT": "XBTUSDT",
+        "ETHUSDT": "ETHUSDT",
+        "BNBUSDT": "BNBUSDT",
+        "SOLUSDT": "SOLUSDT",
+        "ADAUSDT": "ADAUSDT"
+    }
+    kraken_symbol = kraken_map.get(symbol, symbol)
+    # 1. Try Bybit Perpetuals API
     try:
-        # Bybit Perpetual Ticker
         url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}"
         resp = requests.get(url, timeout=5)
         ticker_data = resp.json()['result']['list'][0]
 
-        # Bybit Perpetual Kline for 1m candles (for VWAP etc)
         kline_url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=1&limit=100"
         klines = requests.get(kline_url, timeout=5).json()['result']['list']
-
-        # Bybit recent trades (for order flow)
-        trades_url = f"https://api.bybit.com/v5/market/trade?category=linear&symbol={symbol}&limit=100"
-        trades = requests.get(trades_url, timeout=5).json()['result']['list']
-
         closes = [float(k[4]) for k in klines]
-        deltas = np.diff(closes)
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
-        avg_gain = gains[-14:].mean()
-        avg_loss = losses[-14:].mean() if losses[-14:].mean() > 0 else 1
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-
-        if len(closes) >= 26:
-            ema12 = np.mean(closes[-12:])
-            ema26 = np.mean(closes[-26:])
-            macd = (ema12 - ema26) / ema26 * 100
-        else:
-            macd = 0
-
-        vwap_calc, vwap_up, vwap_low = calculate_vwap(klines)
-        vwap = vwap_calc if not np.isnan(vwap_calc) else float(ticker_data['lastPrice'])
-        vwap_upper = vwap_up
-        vwap_lower = vwap_low
-
-        imbalance, buy_vol, sell_vol = calculate_order_flow_imbalance(trades)
-
+        vwap, vwap_up, vwap_low = calculate_vwap(klines)
+        rsi = calculate_rsi(closes)
+        macd = calculate_macd(closes)
         return {
             'data_source': 'Bybit Perpetuals',
             'price': float(ticker_data['lastPrice']),
@@ -163,22 +146,66 @@ def get_enhanced_data(symbol):
             'rsi': round(rsi, 2),
             'macd': round(macd, 2),
             'vwap': round(vwap, 2),
-            'vwap_upper': round(vwap_upper, 2),
-            'vwap_lower': round(vwap_lower, 2),
+            'vwap_upper': round(vwap_up, 2),
+            'vwap_lower': round(vwap_low, 2),
             'price_vs_vwap': round((float(ticker_data['lastPrice']) - vwap) / vwap * 100, 2),
-            'order_flow_imbalance': imbalance,
-            'aggressive_buy_volume': buy_vol,
-            'aggressive_sell_volume': sell_vol,
+            'order_flow_imbalance': np.nan,
+            'aggressive_buy_volume': 0,
+            'aggressive_sell_volume': 0,
             'last_updated': datetime.now().strftime('%H:%M:%S')
         }
-    except Exception as e:
+    except Exception as e1:
+        st.sidebar.warning(f"Bybit API failed: {str(e1)[:60]}")
+
+    # 2. Try OKX Spot API
+    try:
+        url = f"https://www.okx.com/api/v5/market/ticker?instId={okx_symbol}"
+        resp = requests.get(url, timeout=5)
+        ticker_data = resp.json()['data'][0]
+
+        kline_url = f"https://www.okx.com/api/v5/market/candles?instId={okx_symbol}&bar=1m&limit=100"
+        klines = requests.get(kline_url, timeout=5).json()['data']
+        # OKX candle: [ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm]
+        closes = [float(k[4]) for k in klines]
+        vwap, vwap_up, vwap_low = calculate_vwap([[None,None,float(k[2]),float(k[3]),float(k[4]),float(k[5])] for k in klines])
+        rsi = calculate_rsi(closes)
+        macd = calculate_macd(closes)
         return {
-            'data_source': f'Demo Mode (Bybit error: {str(e)[:50]})',
-            'price': np.nan,
+            'data_source': 'OKX Spot',
+            'price': float(ticker_data['last']),
+            'price_change_24h': float(ticker_data.get('change24h', 0)),
+            'volume': float(ticker_data.get('volCcy24h', 0)),
+            'high_24h': float(ticker_data.get('high24h', 0)),
+            'low_24h': float(ticker_data.get('low24h', 0)),
+            'rsi': round(rsi, 2),
+            'macd': round(macd, 2),
+            'vwap': round(vwap, 2),
+            'vwap_upper': round(vwap_up, 2),
+            'vwap_lower': round(vwap_low, 2),
+            'price_vs_vwap': round((float(ticker_data['last']) - vwap) / vwap * 100, 2) if vwap else np.nan,
+            'order_flow_imbalance': np.nan,
+            'aggressive_buy_volume': 0,
+            'aggressive_sell_volume': 0,
+            'last_updated': datetime.now().strftime('%H:%M:%S')
+        }
+    except Exception as e2:
+        st.sidebar.warning(f"OKX API failed: {str(e2)[:60]}")
+
+    # 3. Try Kraken Spot API (price only)
+    try:
+        url = f"https://api.kraken.com/0/public/Ticker?pair={kraken_symbol}"
+        resp = requests.get(url, timeout=5)
+        result = resp.json()['result']
+        first_key = list(result.keys())[0]
+        ticker_data = result[first_key]
+        price = float(ticker_data['c'][0])
+        return {
+            'data_source': 'Kraken Spot',
+            'price': price,
             'price_change_24h': np.nan,
-            'volume': np.nan,
-            'high_24h': np.nan,
-            'low_24h': np.nan,
+            'volume': float(ticker_data['v'][1]),
+            'high_24h': float(ticker_data['h'][1]),
+            'low_24h': float(ticker_data['l'][1]),
             'rsi': np.nan,
             'macd': np.nan,
             'vwap': np.nan,
@@ -190,14 +217,40 @@ def get_enhanced_data(symbol):
             'aggressive_sell_volume': 0,
             'last_updated': datetime.now().strftime('%H:%M:%S')
         }
+    except Exception as e3:
+        st.sidebar.warning(f"Kraken API failed: {str(e3)[:60]}")
+
+    st.sidebar.error("All live APIs failed. Showing demo/offline mode.")
+    return {
+        'data_source': f'Demo Mode (All APIs failed)',
+        'price': np.nan,
+        'price_change_24h': np.nan,
+        'volume': np.nan,
+        'high_24h': np.nan,
+        'low_24h': np.nan,
+        'rsi': np.nan,
+        'macd': np.nan,
+        'vwap': np.nan,
+        'vwap_upper': np.nan,
+        'vwap_lower': np.nan,
+        'price_vs_vwap': np.nan,
+        'order_flow_imbalance': np.nan,
+        'aggressive_buy_volume': 0,
+        'aggressive_sell_volume': 0,
+        'last_updated': datetime.now().strftime('%H:%M:%S')
+    }
 
 def calculate_signal_probability(data):
     base_prob = 50
     if not np.isnan(data['price']) and not np.isnan(data['vwap']):
         base_prob += (data['price'] > data['vwap']) * 10
-    if data['rsi'] > 70: base_prob -= 10
-    elif data['rsi'] < 30: base_prob += 10
-    base_prob += np.sign(data['macd']) * 5
+    if not np.isnan(data['rsi']):
+        if data['rsi'] > 70:
+            base_prob -= 10
+        elif data['rsi'] < 30:
+            base_prob += 10
+    if not np.isnan(data['macd']):
+        base_prob += np.sign(data['macd']) * 5
     return base_prob
 
 def generate_trading_signals(data, strategy):
@@ -207,16 +260,16 @@ def generate_trading_signals(data, strategy):
         signals[strategy] = 'no_data'
         return signals
     if strategy == 'day_trading':
-        signals[strategy] = 'buy' if price > data['vwap'] else 'sell'
+        signals[strategy] = 'buy' if not np.isnan(data['vwap']) and price > data['vwap'] else 'sell'
     elif strategy == 'perp':
-        signals[strategy] = 'long' if price > data['vwap'] else 'short'
+        signals[strategy] = 'long' if not np.isnan(data['vwap']) and price > data['vwap'] else 'short'
     elif strategy == 'spot':
-        signals[strategy] = 'buy' if data['rsi'] < 30 else 'hold'
+        signals[strategy] = 'buy' if not np.isnan(data['rsi']) and data['rsi'] < 30 else 'hold'
     else:
         signals = {
-            'day_trading': 'buy' if price > data['vwap'] else 'sell',
-            'perp': 'long' if price > data['vwap'] else 'short',
-            'spot': 'buy' if data['rsi'] < 30 else 'hold'
+            'day_trading': 'buy' if not np.isnan(data['vwap']) and price > data['vwap'] else 'sell',
+            'perp': 'long' if not np.isnan(data['vwap']) and price > data['vwap'] else 'short',
+            'spot': 'buy' if not np.isnan(data['rsi']) and data['rsi'] < 30 else 'hold'
         }
     return signals
 
@@ -228,7 +281,6 @@ def save_signal_to_history(symbol, strategy, signal):
         'timestamp': datetime.now()
     })
 
-# --- Main Panel ---
 col_status1, col_status2, col_status3 = st.columns([2, 1, 1])
 with col_status1:
     selected_strategy = st.radio(
@@ -239,7 +291,7 @@ with col_status1:
 with col_status2:
     if symbols:
         test_data = get_enhanced_data(symbols[0])
-        status = "🟢 Live" if test_data['data_source'].startswith('Bybit') else "🟡 Demo"
+        status = "🟢 Live" if "Demo" not in test_data['data_source'] else "🟡 Demo"
         st.metric("Status", status)
 with col_status3:
     st.metric("Last Update", st.session_state.last_update.strftime('%H:%M:%S'))
@@ -263,6 +315,7 @@ for i, sym in enumerate(symbols):
         save_signal_to_history(sym, strategy_key[selected_strategy], sig)
         st.write(f"Signal: {sig}")
 
+        # Chart
         df = pd.DataFrame([{
             'time': datetime.now(),
             'price': data['price'],
@@ -270,7 +323,8 @@ for i, sym in enumerate(symbols):
         }])
         fig = make_subplots(specs=[[{'secondary_y': False}]])
         fig.add_trace(go.Scatter(x=df['time'], y=df['price'], name='Price'))
-        fig.add_trace(go.Scatter(x=df['time'], y=df['vwap'], name='VWAP', line=dict(dash='dash')))
+        if not np.isnan(data['vwap']):
+            fig.add_trace(go.Scatter(x=df['time'], y=df['vwap'], name='VWAP', line=dict(dash='dash')))
         st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("""
