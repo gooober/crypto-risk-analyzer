@@ -36,7 +36,7 @@ if 'order_flow_history' not in st.session_state:
 
 # Sidebar
 with st.sidebar:
-    st.header(⚙️ Settings")
+ st.header("⚙️ Settings")
     
     symbols = st.multiselect(
         "Select Cryptocurrencies",
