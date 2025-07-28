@@ -5,44 +5,64 @@ import numpy as np
 from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import os
 
+# ========== AI Integration ==========
+def ai_trade_commentary(symbol, price, vwap, supertrend, signal, stop, balance, leverage, position_size):
+    try:
+        import openai
+        openai.api_key = st.session_state.get("openai_api_key", os.getenv("OPENAI_API_KEY"))
+        prompt = (
+            f"You are a trading assistant for a day trader with ${balance} and {leverage}x leverage. "
+            f"They want to risk only ${position_size} on this trade. "
+            f"Symbol: {symbol}. Price: {price:.2f}, VWAP: {vwap:.2f}, SuperTrend: {supertrend:.2f}. "
+            f"Signal: {signal}. Stop Loss: {stop:.2f}. "
+            f"Give clear advice on 1) if this is a smart trade for this account size, "
+            f"2) why or why not to enter now, 3) any warnings about risk, 4) a one-sentence summary."
+        )
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "system", "content": prompt}],
+            max_tokens=120
+        )
+        return response["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"AI commentary not available ({e})"
+
+# ========== Streamlit UI ==========
 st.set_page_config(
-    page_title="Perpetual Crypto Trade Risk Analyzer",
+    page_title="Small Account Day Trading Analyzer",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+st.title("🚦 Small Account Day Trading Analyzer")
 
-st.title("🚀 Perpetual Crypto Trade Risk Analyzer")
-
-# Session state
 if 'last_update' not in st.session_state:
     st.session_state.last_update = datetime.now()
 if 'signal_history' not in st.session_state:
     st.session_state.signal_history = []
 
-# --- Sidebar ---
+# --- Sidebar (global account settings and API key) ---
 with st.sidebar:
-    st.header("⚙️ Settings")
+    st.header("Global Account & Risk Settings")
+    default_balance = st.number_input("Default Account Size (USD)", min_value=10.0, value=50.0, step=1.0)
+    max_risk_per_trade = st.number_input("Max Risk % per Trade", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
+    leverage = st.slider("Leverage", 1, 20, 5)
+    ai_enabled = st.checkbox("Enable AI commentary (OpenAI key)", value=False)
+    if ai_enabled:
+        openai_key = st.text_input("Paste your OpenAI API key", type="password")
+        if openai_key:
+            st.session_state["openai_api_key"] = openai_key
+    st.header("Symbols & Refresh")
     symbols = st.multiselect(
         "Select Cryptocurrencies",
         ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT"],
-        default=["BTCUSDT", "ETHUSDT"]
+        default=["BTCUSDT"]
     )
-    leverage = st.slider("Leverage", 1, 20, 5)
     refresh_rate = st.slider("Refresh Rate (seconds)", 5, 60, 10)
     if st.button("🔄 Refresh Now"):
         st.session_state.last_update = datetime.now()
         st.rerun()
-    st.header("🔔 Alerts")
-    enable_alerts = st.checkbox("Enable Alerts", value=False)
-    if enable_alerts:
-        st.slider("Alert when probability >", 60, 90, 70)
-    if st.button("📜 View Signal History"):
-        history = st.session_state.signal_history
-        if history:
-            st.write(f"Last {min(5, len(history))} signals:")
-            for sig in history[-5:]:
-                st.write(f"• {sig['timestamp'].strftime('%H:%M')} - {sig['symbol']} {sig['signal']} @ {sig['price']}")
 
 # --- Indicator helpers ---
 def calculate_vwap(klines):
@@ -55,13 +75,12 @@ def calculate_vwap(klines):
     return vwap
 
 def calculate_supertrend(df, period=10, multiplier=3):
-    """Returns SuperTrend line, direction (1=long, -1=short), buy/sell points, stop"""
     hl2 = (df['high'] + df['low']) / 2
     atr = pd.Series(df['high'] - df['low']).rolling(period).mean()
     final_upperband = hl2 + (multiplier * atr)
     final_lowerband = hl2 - (multiplier * atr)
     supertrend = [np.nan]*len(df)
-    direction = [1]  # 1=long, -1=short
+    direction = [1]
     for i in range(1, len(df)):
         if df['close'][i] > final_upperband[i-1]:
             direction.append(1)
@@ -76,25 +95,7 @@ def calculate_supertrend(df, period=10, multiplier=3):
     supertrend = pd.Series(supertrend).fillna(method='bfill').to_list()
     return supertrend, direction
 
-def calculate_rsi(closes, period=14):
-    closes = np.array(closes)
-    deltas = np.diff(closes)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    avg_gain = gains[-period:].mean()
-    avg_loss = losses[-period:].mean() if losses[-period:].mean() > 0 else 1
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_macd(closes, fast=12, slow=26):
-    closes = np.array(closes)
-    if len(closes) < slow:
-        return np.nan
-    ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean().iloc[-1]
-    ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean().iloc[-1]
-    return (ema_fast - ema_slow) / ema_slow * 100
-
-# --- Universal Data Fetcher ---
+# --- Universal Data Fetcher with US-friendly fallback ---
 def get_enhanced_data(symbol):
     okx_symbol = symbol.replace("USDT", "-USDT")
     kraken_map = {
@@ -105,8 +106,8 @@ def get_enhanced_data(symbol):
         "ADAUSDT": "ADAUSDT"
     }
     kraken_symbol = kraken_map.get(symbol, symbol)
-    # 1. Bybit
     try:
+        # Bybit
         url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}"
         resp = requests.get(url, timeout=5)
         ticker_data = resp.json()['result']['list'][0]
@@ -116,36 +117,22 @@ def get_enhanced_data(symbol):
         highs = [float(k[2]) for k in klines]
         lows = [float(k[3]) for k in klines]
         vwap = calculate_vwap(klines)
-        rsi = calculate_rsi(closes)
-        macd = calculate_macd(closes)
-        df = pd.DataFrame({
-            "close": closes,
-            "high": highs,
-            "low": lows
-        })
+        df = pd.DataFrame({"close": closes, "high": highs, "low": lows})
         supertrend, direction = calculate_supertrend(df)
         return {
             'data_source': 'Bybit Perpetuals',
             'price': float(ticker_data['lastPrice']),
-            'price_change_24h': float(ticker_data['price24hPcnt']) * 100,
-            'volume': float(ticker_data['turnover24h']),
-            'high_24h': float(ticker_data['highPrice24h']),
-            'low_24h': float(ticker_data['lowPrice24h']),
-            'rsi': round(rsi, 2),
-            'macd': round(macd, 2),
             'vwap': round(vwap, 2),
             'supertrend': supertrend,
             'supertrend_dir': direction,
             'signal': "Buy" if direction[-1] == 1 and closes[-1] > supertrend[-1] else "Sell",
             'stop_loss': round(supertrend[-1], 2),
-            'last_updated': datetime.now().strftime('%H:%M:%S'),
-            "price_series": closes
+            'price_series': closes
         }
     except Exception as e1:
         st.sidebar.warning(f"Bybit API failed: {str(e1)[:60]}")
-
-    # 2. OKX Spot
     try:
+        # OKX Spot
         url = f"https://www.okx.com/api/v5/market/ticker?instId={okx_symbol}"
         resp = requests.get(url, timeout=5)
         ticker_data = resp.json()['data'][0]
@@ -155,36 +142,22 @@ def get_enhanced_data(symbol):
         highs = [float(k[2]) for k in klines]
         lows = [float(k[3]) for k in klines]
         vwap = calculate_vwap([[None, None, float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in klines])
-        rsi = calculate_rsi(closes)
-        macd = calculate_macd(closes)
-        df = pd.DataFrame({
-            "close": closes,
-            "high": highs,
-            "low": lows
-        })
+        df = pd.DataFrame({"close": closes, "high": highs, "low": lows})
         supertrend, direction = calculate_supertrend(df)
         return {
             'data_source': 'OKX Spot',
             'price': float(ticker_data['last']),
-            'price_change_24h': float(ticker_data.get('change24h', 0)),
-            'volume': float(ticker_data.get('volCcy24h', 0)),
-            'high_24h': float(ticker_data.get('high24h', 0)),
-            'low_24h': float(ticker_data.get('low24h', 0)),
-            'rsi': round(rsi, 2),
-            'macd': round(macd, 2),
             'vwap': round(vwap, 2),
             'supertrend': supertrend,
             'supertrend_dir': direction,
             'signal': "Buy" if direction[-1] == 1 and closes[-1] > supertrend[-1] else "Sell",
             'stop_loss': round(supertrend[-1], 2),
-            'last_updated': datetime.now().strftime('%H:%M:%S'),
-            "price_series": closes
+            'price_series': closes
         }
     except Exception as e2:
         st.sidebar.warning(f"OKX API failed: {str(e2)[:60]}")
-
-    # 3. Kraken
     try:
+        # Kraken
         url = f"https://api.kraken.com/0/public/Ticker?pair={kraken_symbol}"
         resp = requests.get(url, timeout=5)
         result = resp.json()['result']
@@ -194,61 +167,33 @@ def get_enhanced_data(symbol):
         return {
             'data_source': 'Kraken Spot',
             'price': price,
-            'price_change_24h': np.nan,
-            'volume': float(ticker_data['v'][1]),
-            'high_24h': float(ticker_data['h'][1]),
-            'low_24h': float(ticker_data['l'][1]),
-            'rsi': np.nan,
-            'macd': np.nan,
             'vwap': np.nan,
             'supertrend': [np.nan],
             'supertrend_dir': [0],
             'signal': "No Signal",
             'stop_loss': np.nan,
-            'last_updated': datetime.now().strftime('%H:%M:%S'),
-            "price_series": [price]
+            'price_series': [price]
         }
     except Exception as e3:
         st.sidebar.warning(f"Kraken API failed: {str(e3)[:60]}")
-
     st.sidebar.error("All live APIs failed. Showing demo/offline mode.")
     return {
         'data_source': f'Demo Mode (All APIs failed)',
         'price': np.nan,
-        'price_change_24h': np.nan,
-        'volume': np.nan,
-        'high_24h': np.nan,
-        'low_24h': np.nan,
-        'rsi': np.nan,
-        'macd': np.nan,
         'vwap': np.nan,
         'supertrend': [np.nan],
         'supertrend_dir': [0],
         'signal': "No Signal",
         'stop_loss': np.nan,
-        'last_updated': datetime.now().strftime('%H:%M:%S'),
-        "price_series": []
+        'price_series': []
     }
 
-# --- Main Panel ---
-col_status1, col_status2, col_status3 = st.columns([2, 1, 1])
-with col_status1:
-    selected_strategy = st.radio(
-        "Trading Strategy:",
-        ["Perpetual (Futures)", "Day Trading", "Spot Trading", "All Strategies"],
-        horizontal=True
-    )
-with col_status2:
-    if symbols:
-        test_data = get_enhanced_data(symbols[0])
-        status = "🟢 Live" if "Demo" not in test_data['data_source'] else "🟡 Demo"
-        st.metric("Status", status)
-with col_status3:
-    st.metric("Last Update", st.session_state.last_update.strftime('%H:%M:%S'))
+# --- TABS ---
+tabs = st.tabs(["Dashboard", "Trade Planner"])
 
-cols = st.columns(len(symbols))
-for i, sym in enumerate(symbols):
-    with cols[i]:
+with tabs[0]:
+    st.markdown("### Dashboard (All Symbols)")
+    for sym in symbols:
         data = get_enhanced_data(sym)
         st.subheader(f"{sym}")
         st.metric("Price", f"${data['price']:.2f}" if not np.isnan(data['price']) else "N/A")
@@ -256,14 +201,6 @@ for i, sym in enumerate(symbols):
         st.metric("SuperTrend", f"{data['supertrend'][-1]:.2f}" if not np.isnan(data['supertrend'][-1]) else "N/A")
         st.metric("Signal", data['signal'])
         st.metric("Stop Loss", f"${data['stop_loss']:.2f}" if not np.isnan(data['stop_loss']) else "N/A")
-
-        st.markdown(
-            f"""
-            **Buy:** { 'YES' if data['signal'] == 'Buy' else 'NO' }  
-            **Sell:** { 'YES' if data['signal'] == 'Sell' else 'NO' }  
-            **Suggested Stop:** {data['stop_loss'] if not np.isnan(data['stop_loss']) else "N/A"}
-            """
-        )
 
         # --- Chart: Price, VWAP, SuperTrend ---
         if data['price_series'] and not np.isnan(data['vwap']):
@@ -276,7 +213,6 @@ for i, sym in enumerate(symbols):
             fig.update_layout(margin=dict(t=10,b=10), height=300)
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- Signal History Save ---
         st.session_state.signal_history.append({
             'symbol': sym,
             'signal': data['signal'],
@@ -284,15 +220,53 @@ for i, sym in enumerate(symbols):
             'timestamp': datetime.now()
         })
 
+with tabs[1]:
+    st.markdown("### Trade Planner")
+    for sym in symbols:
+        data = get_enhanced_data(sym)
+        st.subheader(f"{sym} Trade Planner")
+
+        buy_in = st.number_input(f"Your Buy-in Amount for {sym} ($)", min_value=1.0, value=default_balance, step=1.0, key=f"buyin_{sym}")
+        entry_price = data['price']
+        stop = data['stop_loss']
+
+        # --- Position sizing logic ---
+        risk_dollars = buy_in * max_risk_per_trade / 100
+        if not np.isnan(entry_price) and not np.isnan(stop) and abs(entry_price - stop) > 0:
+            pos_size = round(risk_dollars / abs(entry_price - stop) * entry_price / leverage, 2)
+            st.info(f"**Suggested Position Size:** ${pos_size} (at {leverage}x, risking {max_risk_per_trade}% of your buy-in)")
+            trade_advice = (
+                f"{'🟢 **BUY NOW**' if data['signal']=='Buy' else '🔴 **SELL/AVOID**'} at ${entry_price:.2f}, "
+                f"Stop Loss: ${stop:.2f}. (Risk: ${risk_dollars:.2f})"
+            )
+            st.success(trade_advice)
+        else:
+            st.info("Position size not available (price or stop missing).")
+
+        # --- AI Commentary (optional) ---
+        if ai_enabled and not np.isnan(entry_price) and not np.isnan(stop) and not np.isnan(data['vwap']) and not np.isnan(data['supertrend'][-1]):
+            ai_result = ai_trade_commentary(
+                sym, entry_price, data['vwap'], data['supertrend'][-1], data['signal'], stop,
+                buy_in, leverage, pos_size if 'pos_size' in locals() else 0
+            )
+            st.warning("**AI Commentary:**\n" + ai_result)
+
+        # --- Chart: Price, VWAP, SuperTrend ---
+        if data['price_series'] and not np.isnan(data['vwap']):
+            price_series = data['price_series']
+            x = [datetime.now() - pd.Timedelta(minutes=len(price_series)-i-1) for i in range(len(price_series))]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=x, y=price_series, name="Price"))
+            fig.add_trace(go.Scatter(x=x, y=[data['vwap']]*len(price_series), name="VWAP", line=dict(dash="dash")))
+            fig.add_trace(go.Scatter(x=x, y=data['supertrend'], name="SuperTrend", line=dict(color='green' if data['signal']=='Buy' else 'red')))
+            fig.update_layout(margin=dict(t=10,b=10), height=300)
+            st.plotly_chart(fig, use_container_width=True)
+
 st.markdown("""
-### How This Works
-
-- **Buy:** When price is above SuperTrend and SuperTrend is green.
-- **Sell:** When price is below SuperTrend and SuperTrend is red.
-- **Suggested Stop Loss:** Last SuperTrend line (auto-adjusts every minute).
-- VWAP gives fair value; price crossing above/below is a confirmation.
-
-**All data is live (Bybit/OKX/Kraken fallback) and auto-refreshes every few seconds.**
+### How to Use Trade Planner
+- Enter your buy-in for each symbol in the Trade Planner tab.
+- You’ll get a clear “Buy Now” or “Sell/Avoid” signal, stop loss, and personalized position size.
+- AI commentary (if enabled) will check each setup for extra risk or warnings.
 """)
 
 current_time = datetime.now()
