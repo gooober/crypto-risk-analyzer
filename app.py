@@ -101,11 +101,12 @@ with st.sidebar:
             for sig in history[-5:]:
                 st.write(f"• {sig['timestamp'].strftime('%H:%M')} - {sig['symbol']} {sig['signal']}")
 
-# Enhanced data fetching
+# === Enhanced data fetching ===
 @st.cache_data(ttl=5)
 def get_enhanced_data(symbol):
     """Fetch enhanced data with technical indicators, VWAP, and order flow"""
 
+    # Try multiple sources in order of preference
     price_data = None
     attempts = []
 
@@ -121,6 +122,7 @@ def get_enhanced_data(symbol):
             trades_response = requests.get(trades_url, timeout=3)
             # parse and compute indicators...
             return {
+                'data_source': 'Binance Spot',
                 'price': float(stats['lastPrice']),
                 'rsi': 50,
                 'macd': 0,
@@ -131,8 +133,9 @@ def get_enhanced_data(symbol):
             }
     except Exception:
         pass
-    # fallback or other methods...
+    # Fallback if needed
     return {
+        'data_source': 'Demo Mode',
         'price': np.nan,
         'rsi': np.nan,
         'macd': np.nan,
@@ -143,10 +146,12 @@ def get_enhanced_data(symbol):
     }
 
 # Signal probability calculation
+# You can customize this further
 
 def calculate_signal_probability(data):
     base_prob = 50
-    base_prob += (data['price'] > data['vwap']) * 10
+    if not np.isnan(data['price']) and not np.isnan(data['vwap']):
+        base_prob += (data['price'] > data['vwap']) * 10
     # RSI adjustments
     if data['rsi'] > 70:
         base_prob -= 10
@@ -156,22 +161,104 @@ def calculate_signal_probability(data):
     base_prob += np.sign(data['macd']) * 5
     return base_prob
 
-# === Main loop ===
+# Generate trading signals based on strategy
+
+def generate_trading_signals(data, strategy):
+    signals = {}
+    price = data['price']
+    if np.isnan(price):
+        signals[strategy] = 'no_data'
+        return signals
+    if strategy == 'day_trading':
+        signals[strategy] = 'buy' if price > data['vwap'] else 'sell'
+    elif strategy == 'perp':
+        signals[strategy] = 'long' if price > data['vwap'] else 'short'
+    elif strategy == 'spot':
+        signals[strategy] = 'buy' if data['rsi'] < 30 else 'hold'
+    else:
+        # All strategies
+        signals = {
+            'day_trading': 'buy' if price > data['vwap'] else 'sell',
+            'perp': 'long' if price > data['vwap'] else 'short',
+            'spot': 'buy' if data['rsi'] < 30 else 'hold'
+        }
+    return signals
+
+# Save signals to history
+
+def save_signal_to_history(symbol, strategy, signal):
+    st.session_state.signal_history.append({
+        'symbol': symbol,
+        'strategy': strategy,
+        'signal': signal,
+        'timestamp': datetime.now()
+    })
+
+# === Main rendering ===
+
+col_status1, col_status2, col_status3 = st.columns([2, 1, 1])
+with col_status1:
+    selected_strategy = st.radio(
+        "Trading Strategy:",
+        ["Perpetual (Futures)", "Day Trading", "Spot Trading", "All Strategies"],
+        horizontal=True
+    )
+with col_status2:
+    if symbols:
+        test_data = get_enhanced_data(symbols[0])
+        status = "🟢 Live" if test_data['data_source'] != 'Demo Mode' else "🟡 Demo"
+        st.metric("Status", status)
+with col_status3:
+    st.metric("Last Update", st.session_state.last_update.strftime('%H:%M:%S'))
+
+# Display metrics and charts per symbol
 cols = st.columns(len(symbols))
-for i, symbol in enumerate(symbols):
+strategy_key = {
+    "Perpetual (Futures)": 'perp',
+    "Day Trading": 'day_trading',
+    "Spot Trading": 'spot',
+    "All Strategies": 'all'
+}
+for i, sym in enumerate(symbols):
     with cols[i]:
-        data = get_enhanced_data(symbol)
+        data = get_enhanced_data(sym)
         prob = calculate_signal_probability(data)
-        st.metric(label=f"{symbol} Signal Probability", value=f"{prob}%")
-        # Price and VWAP chart
-        df = pd.DataFrame([data])
-        fig = make_subplots(rows=1, cols=1)
-        fig.add_trace(go.Scatter(x=[datetime.now()], y=[data['price']], mode='markers+lines', name='Price'))
-        fig.add_shape(type='line', x0=0, x1=1, y0=data['vwap'], y1=data['vwap'], xref='paper', yref='y', line=dict(dash='dash'),)
+        st.subheader(f"{sym} Signal Probability")
+        st.metric(label="Probability", value=f"{prob}%")
+
+        # Generate and save signals
+        sigs = generate_trading_signals(data, strategy_key[selected_strategy])
+        sig = sigs[strategy_key[selected_strategy]]
+        save_signal_to_history(sym, strategy_key[selected_strategy], sig)
+        st.write(f"Signal: {sig}")
+
+        # Price & VWAP chart
+        df = pd.DataFrame([{
+            'time': datetime.now(),
+            'price': data['price'],
+            'vwap': data['vwap']
+        }])
+        fig = make_subplots(specs=[[{'secondary_y': False}]])
+        fig.add_trace(go.Scatter(x=df['time'], y=df['price'], name='Price'))
+        fig.add_trace(go.Scatter(x=df['time'], y=df['vwap'], name='VWAP', line=dict(dash='dash')))
         st.plotly_chart(fig, use_container_width=True)
 
-# Auto-refresh
+# Strategy guidelines
+st.markdown("""
+### Trading Guidelines
+
+- Only take longs with positive flow
+- Only take shorts with negative flow
+- Avoid trades against strong flow
+
+### Risk Management with VWAP
+- Use VWAP bands as stop loss levels
+- Reduce position size when extended from VWAP
+- Take partial profits at VWAP
+""")
+
+# Auto-refresh logic
 current_time = datetime.now()
-if (current_time - st.session_state.last_update).total_seconds() >= st.session_state.get('refresh_rate', 10):
+if (current_time - st.session_state.last_update).total_seconds() >= refresh_rate:
     st.session_state.last_update = current_time
     st.rerun()
