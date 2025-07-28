@@ -99,7 +99,6 @@ def calculate_atr(highs, lows, closes, period=14):
     return pd.Series(tr).rolling(period).mean().iloc[-1]
 
 def get_trend(symbol, interval="60"):
-    # 1h trend (by default), fallback OKX
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit=50"
         klines = requests.get(url, timeout=5).json()['result']['list']
@@ -109,9 +108,26 @@ def get_trend(symbol, interval="60"):
     except:
         return "Unknown"
 
-# ========= Data Fetcher (with fallbacks) ==========
+# ========= Multi-Exchange Data Fetch ==========
 def get_enhanced_data(symbol):
     okx_symbol = symbol.replace("USDT", "-USDT")
+    kraken_map = {
+        "BTCUSDT": "XBTUSDT",
+        "ETHUSDT": "ETHUSDT",
+        "BNBUSDT": "BNBUSDT",
+        "SOLUSDT": "SOLUSDT",
+        "ADAUSDT": "ADAUSDT"
+    }
+    coinbase_map = {
+        "BTCUSDT": "BTC-USD",
+        "ETHUSDT": "ETH-USD",
+        "BNBUSDT": "BNB-USD",
+        "SOLUSDT": "SOL-USD",
+        "ADAUSDT": "ADA-USD"
+    }
+    kraken_symbol = kraken_map.get(symbol, symbol)
+    coinbase_symbol = coinbase_map.get(symbol, symbol.replace("USDT", "-USD"))
+    # 1. Bybit (Perp)
     try:
         url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}"
         resp = requests.get(url, timeout=5)
@@ -146,7 +162,106 @@ def get_enhanced_data(symbol):
         }
     except Exception as e1:
         st.sidebar.warning(f"Bybit API failed: {str(e1)[:60]}")
-    # fallback...
+    # 2. OKX (Spot)
+    try:
+        url = f"https://www.okx.com/api/v5/market/ticker?instId={okx_symbol}"
+        resp = requests.get(url, timeout=5)
+        ticker_data = resp.json()['data'][0]
+        kline_url = f"https://www.okx.com/api/v5/market/candles?instId={okx_symbol}&bar=1m&limit=100"
+        klines = requests.get(kline_url, timeout=5).json()['data']
+        closes = [float(k[4]) for k in klines]
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
+        vwap = calculate_vwap([[None,None,float(k[2]),float(k[3]),float(k[4]),float(k[5])] for k in klines])
+        df = pd.DataFrame({"close": closes, "high": highs, "low": lows})
+        supertrend, direction = calculate_supertrend(df)
+        rsi = calculate_rsi(closes)
+        macd = calculate_macd(closes)
+        atr = calculate_atr(np.array(highs), np.array(lows), np.array(closes))
+        return {
+            'data_source': 'OKX Spot',
+            'price': float(ticker_data['last']),
+            'vwap': round(vwap, 2),
+            'supertrend': supertrend,
+            'supertrend_dir': direction,
+            'signal': "Buy" if direction[-1] == 1 and closes[-1] > supertrend[-1] else "Sell",
+            'stop_loss': round(supertrend[-1], 2),
+            'rsi': round(rsi,2),
+            'macd': round(macd,2),
+            'atr': round(atr,2),
+            'trend_1h': "Unknown",
+            'trend_5m': "Unknown",
+            'price_series': closes,
+            'highs': highs,
+            'lows': lows,
+        }
+    except Exception as e2:
+        st.sidebar.warning(f"OKX API failed: {str(e2)[:60]}")
+    # 3. Kraken (Spot)
+    try:
+        url = f"https://api.kraken.com/0/public/Ticker?pair={kraken_symbol}"
+        resp = requests.get(url, timeout=5)
+        result = resp.json()['result']
+        first_key = list(result.keys())[0]
+        ticker_data = result[first_key]
+        price = float(ticker_data['c'][0])
+        return {
+            'data_source': 'Kraken Spot',
+            'price': price,
+            'vwap': np.nan,
+            'supertrend': [np.nan],
+            'supertrend_dir': [0],
+            'signal': "No Signal",
+            'stop_loss': np.nan,
+            'rsi': np.nan,
+            'macd': np.nan,
+            'atr': np.nan,
+            'trend_1h': "Unknown",
+            'trend_5m': "Unknown",
+            'price_series': [price],
+            'highs': [price],
+            'lows': [price],
+        }
+    except Exception as e3:
+        st.sidebar.warning(f"Kraken API failed: {str(e3)[:60]}")
+    # 4. Coinbase (Spot)
+    try:
+        url = f"https://api.pro.coinbase.com/products/{coinbase_symbol}/ticker"
+        resp = requests.get(url, timeout=5)
+        ticker_data = resp.json()
+        price = float(ticker_data['price'])
+        # Fetch candles for indicators
+        kline_url = f"https://api.pro.coinbase.com/products/{coinbase_symbol}/candles?granularity=60&limit=100"
+        klines = requests.get(kline_url, timeout=5).json()
+        closes = [float(k[4]) for k in klines]
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[1]) for k in klines]
+        vwap = np.mean(closes)  # Approximate for fallback
+        df = pd.DataFrame({"close": closes, "high": highs, "low": lows})
+        supertrend, direction = calculate_supertrend(df)
+        rsi = calculate_rsi(closes)
+        macd = calculate_macd(closes)
+        atr = calculate_atr(np.array(highs), np.array(lows), np.array(closes))
+        return {
+            'data_source': 'Coinbase Spot',
+            'price': price,
+            'vwap': round(vwap, 2),
+            'supertrend': supertrend,
+            'supertrend_dir': direction,
+            'signal': "Buy" if direction[-1] == 1 and closes[-1] > supertrend[-1] else "Sell",
+            'stop_loss': round(supertrend[-1], 2),
+            'rsi': round(rsi,2),
+            'macd': round(macd,2),
+            'atr': round(atr,2),
+            'trend_1h': "Unknown",
+            'trend_5m': "Unknown",
+            'price_series': closes,
+            'highs': highs,
+            'lows': lows,
+        }
+    except Exception as e4:
+        st.sidebar.warning(f"Coinbase API failed: {str(e4)[:60]}")
+    # All failed
     st.sidebar.error("All APIs failed. Showing demo/offline mode.")
     return {
         'data_source': f'Demo Mode (All APIs failed)',
@@ -237,96 +352,4 @@ with tabs[0]:
     for sym in symbols:
         data = get_enhanced_data(sym)
         buy_vol, sell_vol, imbalance = get_order_flow(sym)
-        st.subheader(f"{sym}")
-        st.metric("Price", f"${data['price']:.2f}" if not np.isnan(data['price']) else "N/A")
-        st.metric("VWAP", f"{data['vwap']:.2f}" if not np.isnan(data['vwap']) else "N/A")
-        st.metric("SuperTrend", f"{data['supertrend'][-1]:.2f}" if not np.isnan(data['supertrend'][-1]) else "N/A")
-        st.metric("Signal", data['signal'])
-        st.metric("Stop Loss", f"${data['stop_loss']:.2f}" if not np.isnan(data['stop_loss']) else "N/A")
-        st.metric("ATR(14)", f"{data['atr']:.2f}" if not np.isnan(data['atr']) else "N/A")
-        st.metric("Order Flow Imb.", f"{imbalance}%" if not np.isnan(imbalance) else "N/A")
-        st.metric("Trend (1h)", data['trend_1h'])
-        st.metric("Trend (5m)", data['trend_5m'])
-        st.write(f"BuyVol: {buy_vol}, SellVol: {sell_vol}")
-        # Order Flow Bar
-        st.progress(int((imbalance+100)/2) if not np.isnan(imbalance) else 50, text="Order Flow Bias")
-        # Chart
-        if data['price_series'] and not np.isnan(data['vwap']):
-            price_series = data['price_series']
-            x = [datetime.now() - pd.Timedelta(minutes=len(price_series)-i-1) for i in range(len(price_series))]
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x, y=price_series, name="Price"))
-            fig.add_trace(go.Scatter(x=x, y=[data['vwap']]*len(price_series), name="VWAP", line=dict(dash="dash")))
-            fig.add_trace(go.Scatter(x=x, y=data['supertrend'], name="SuperTrend", line=dict(color='green' if data['signal']=='Buy' else 'red')))
-            st.plotly_chart(fig, use_container_width=True)
-
-with tabs[1]:
-    st.markdown("### Trade Planner")
-    for sym in symbols:
-        data = get_enhanced_data(sym)
-        buy_vol, sell_vol, imbalance = get_order_flow(sym)
-        st.subheader(f"{sym} Trade Planner")
-        buy_in = st.number_input(f"Your Buy-in Amount for {sym} ($)", min_value=1.0, value=default_balance, step=1.0, key=f"buyin_{sym}")
-        entry_price = data['price']
-        stop = data['stop_loss']
-        # ATR-based TP/SL
-        if not np.isnan(entry_price) and not np.isnan(data['atr']):
-            tp1 = round(entry_price + data['atr'] if data['signal'] == "Buy" else entry_price - data['atr'], 2)
-            tp2 = round(entry_price + 2*data['atr'] if data['signal'] == "Buy" else entry_price - 2*data['atr'], 2)
-            st.write(f"Suggested Take Profit 1: {tp1}, Take Profit 2: {tp2}")
-        # Multi-timeframe filter & confluence
-        confluence = (
-            data['signal'] == "Buy" and data['trend_1h'] == "UP" and imbalance > 0
-            or data['signal'] == "Sell" and data['trend_1h'] == "DOWN" and imbalance < 0
-        )
-        st.info(f"Confluence Signal: {'🟢 STRONG' if confluence else '⚠️ WEAK'}")
-        # Position sizing
-        risk_dollars = buy_in * max_risk_per_trade / 100
-        if not np.isnan(entry_price) and not np.isnan(stop) and abs(entry_price - stop) > 0:
-            pos_size = round(risk_dollars / abs(entry_price - stop) * entry_price / leverage, 2)
-            st.info(f"**Suggested Position Size:** ${pos_size} (at {leverage}x, risking {max_risk_per_trade}% of your buy-in)")
-            trade_advice = (
-                f"{'🟢 **BUY NOW**' if data['signal']=='Buy' and confluence else '🔴 **SELL/AVOID**'} at ${entry_price:.2f}, "
-                f"Stop Loss: ${stop:.2f}."
-            )
-            st.success(trade_advice)
-        else:
-            st.info("Position size not available (price or stop missing).")
-        # AI Commentary
-        if ai_enabled and not np.isnan(entry_price) and not np.isnan(stop) and not np.isnan(data['vwap']) and not np.isnan(data['supertrend'][-1]):
-            ai_result = ai_trade_commentary(
-                sym, entry_price, data['vwap'], data['supertrend'][-1], data['signal'], stop,
-                buy_in, leverage, pos_size if 'pos_size' in locals() else 0
-            )
-            st.warning("**AI Commentary:**\n" + ai_result)
-        # Journal entry demo (manual add):
-        if st.button(f"Record Trade ({sym})"):
-            result = st.radio("Result", ["WIN", "LOSS"], key=f"r_{sym}")
-            record_trade(sym, data['signal'], pos_size if 'pos_size' in locals() else 0, entry_price, stop, tp1 if 'tp1' in locals() else 0, result)
-            st.success("Trade recorded.")
-        # Chart
-        if data['price_series'] and not np.isnan(data['vwap']):
-            price_series = data['price_series']
-            x = [datetime.now() - pd.Timedelta(minutes=len(price_series)-i-1) for i in range(len(price_series))]
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x, y=price_series, name="Price"))
-            fig.add_trace(go.Scatter(x=x, y=[data['vwap']]*len(price_series), name="VWAP", line=dict(dash="dash")))
-            fig.add_trace(go.Scatter(x=x, y=data['supertrend'], name="SuperTrend", line=dict(color='green' if data['signal']=='Buy' else 'red')))
-            st.plotly_chart(fig, use_container_width=True)
-
-with tabs[2]:
-    st.markdown("### Trade Journal & Stats")
-    st.write(get_stats())
-    if st.session_state.journal:
-        df = pd.DataFrame(st.session_state.journal)
-        st.dataframe(df)
-
-with tabs[3]:
-    st.markdown("### Real-time News")
-    for n in get_news():
-        st.write(f"- {n}")
-
-current_time = datetime.now()
-if (current_time - st.session_state.get("last_update",datetime.now())).total_seconds() >= refresh_rate:
-    st.session_state.last_update = current_time
-    st.rerun()
+        st
