@@ -101,6 +101,34 @@ with st.sidebar:
             for sig in history[-5:]:
                 st.write(f"• {sig['timestamp'].strftime('%H:%M')} - {sig['symbol']} {sig['signal']}")
 
+# === Indicator helper functions ===
+
+def calculate_vwap(klines):
+    """Calculate VWAP and upper/lower bands from klines list"""
+    volumes = [float(k[5]) for k in klines]
+    typicals = [ (float(k[2]) + float(k[3]) + float(k[4]))/3 for k in klines ]
+    tp_vol = [t*v for t,v in zip(typicals, volumes)]
+    cum_tp_vol = np.sum(tp_vol)
+    cum_vol = np.sum(volumes)
+    vwap = cum_tp_vol / cum_vol if cum_vol else np.nan
+    return vwap, vwap * 1.002, vwap * 0.998
+
+
+def calculate_order_flow_imbalance(trades):
+    """Compute order flow imbalance from trades list"""
+    buy_vol = 0.0
+    sell_vol = 0.0
+    for trade in trades:
+        qty = float(trade.get('qty', trade.get('quantity', 0)))
+        # isBuyerMaker True indicates seller initiated
+        if trade.get('isBuyerMaker', False):
+            sell_vol += qty
+        else:
+            buy_vol += qty
+    total = buy_vol + sell_vol
+    imbalance = (buy_vol - sell_vol) / total * 100 if total else 0.0
+    return round(imbalance,2), round(buy_vol,2), round(sell_vol,2)
+
 # === Enhanced data fetching ===
 @st.cache_data(ttl=5)
 def get_enhanced_data(symbol):
@@ -126,7 +154,6 @@ def get_enhanced_data(symbol):
         trades = trades_response.json()
 
         # Compute indicators
-        # RSI
         closes = [float(k[4]) for k in klines]
         deltas = np.diff(closes)
         gains = np.where(deltas > 0, deltas, 0)
@@ -135,7 +162,7 @@ def get_enhanced_data(symbol):
         avg_loss = losses[-14:].mean() if losses[-14:].mean() > 0 else 1
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
-        
+
         # MACD
         if len(closes) >= 26:
             ema12 = np.mean(closes[-12:])
@@ -146,37 +173,38 @@ def get_enhanced_data(symbol):
 
         # VWAP and bands
         vwap_calc, vwap_up, vwap_low = calculate_vwap(klines)
-        vwap = vwap_calc or float(stats['lastPrice'])
-        vwap_upper = vwap_up or vwap * 1.002
-        vwap_lower = vwap_low or vwap * 0.998
+        vwap = vwap_calc if not np.isnan(vwap_calc) else float(stats['lastPrice'])
+        vwap_upper = vwap_up
+        vwap_lower = vwap_low
 
-        # Order flow
+        # Order flow imbalance
         imbalance, buy_vol, sell_vol = calculate_order_flow_imbalance(trades)
 
         return {
             'data_source': 'Binance Futures',
-            'current_price': float(stats['lastPrice']),
+            'price': float(stats['lastPrice']),
             'price_change_24h': float(stats['priceChangePercent']),
             'volume': float(stats['volume']),
             'high_24h': float(stats['highPrice']),
             'low_24h': float(stats['lowPrice']),
-            'rsi': round(rsi,2),
-            'macd': round(macd,2),
-            'vwap': vwap,
-            'vwap_upper': vwap_upper,
-            'vwap_lower': vwap_lower,
-            'price_vs_vwap': ((float(stats['lastPrice'])-vwap)/vwap*100),
-            'order_flow_imbalance': round(imbalance,2),
+            'rsi': round(rsi, 2),
+            'macd': round(macd, 2),
+            'vwap': round(vwap, 2),
+            'vwap_upper': round(vwap_upper, 2),
+            'vwap_lower': round(vwap_lower, 2),
+            'price_vs_vwap': round((float(stats['lastPrice']) - vwap) / vwap * 100, 2),
+            'order_flow_imbalance': imbalance,
             'aggressive_buy_volume': buy_vol,
             'aggressive_sell_volume': sell_vol,
             'last_updated': datetime.now().strftime('%H:%M:%S')
         }
     except Exception as e:
         attempts.append(f"Futures API error: {str(e)[:50]}")
-    # Fallback to Spot demo
+
+    # Fallback to demo mode
     return {
         'data_source': f'Demo Mode ({len(attempts)} failures)',
-        'current_price': np.nan,
+        'price': np.nan,
         'price_change_24h': np.nan,
         'volume': np.nan,
         'high_24h': np.nan,
@@ -254,7 +282,7 @@ with col_status1:
 with col_status2:
     if symbols:
         test_data = get_enhanced_data(symbols[0])
-        status = "🟢 Live" if test_data['data_source'] != 'Demo Mode' else "🟡 Demo"
+        status = "🟢 Live" if test_data['data_source'].startswith('Binance Futures') else "🟡 Demo"
         st.metric("Status", status)
 with col_status3:
     st.metric("Last Update", st.session_state.last_update.strftime('%H:%M:%S'))
