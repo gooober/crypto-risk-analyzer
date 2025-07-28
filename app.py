@@ -104,45 +104,93 @@ with st.sidebar:
 # === Enhanced data fetching ===
 @st.cache_data(ttl=5)
 def get_enhanced_data(symbol):
-    """Fetch enhanced data with technical indicators, VWAP, and order flow"""
-
-    # Try multiple sources in order of preference
-    price_data = None
+    """Fetch enhanced data with technical indicators, VWAP, and order flow using Binance Futures API"""
     attempts = []
-
-    # Method 1: Binance Spot API (most reliable)
     try:
-        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
-        response = requests.get(url, timeout=3)
-        if response.status_code == 200:
-            stats = response.json()
-            kline_url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
-            kline_response = requests.get(kline_url, timeout=3)
-            trades_url = f"https://api.binance.com/api/v3/trades?symbol={symbol}&limit=500"
-            trades_response = requests.get(trades_url, timeout=3)
-            # parse and compute indicators...
-            return {
-                'data_source': 'Binance Spot',
-                'price': float(stats['lastPrice']),
-                'rsi': 50,
-                'macd': 0,
-                'vwap': float(stats['lastPrice']),
-                'vwap_upper': float(stats['lastPrice']) * 1.002,
-                'vwap_lower': float(stats['lastPrice']) * 0.998,
-                'order_flow': []
-            }
-    except Exception:
-        pass
-    # Fallback if needed
+        # Fetch 24hr stats from Futures endpoint
+        url = f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        stats = response.json()
+
+        # Fetch kline data
+        kline_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit=100"
+        kline_response = requests.get(kline_url, timeout=5)
+        kline_response.raise_for_status()
+        klines = kline_response.json()
+
+        # Fetch recent trades for order flow
+        trades_url = f"https://fapi.binance.com/fapi/v1/trades?symbol={symbol}&limit=500"
+        trades_response = requests.get(trades_url, timeout=5)
+        trades_response.raise_for_status()
+        trades = trades_response.json()
+
+        # Compute indicators
+        # RSI
+        closes = [float(k[4]) for k in klines]
+        deltas = np.diff(closes)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        avg_gain = gains[-14:].mean()
+        avg_loss = losses[-14:].mean() if losses[-14:].mean() > 0 else 1
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        # MACD
+        if len(closes) >= 26:
+            ema12 = np.mean(closes[-12:])
+            ema26 = np.mean(closes[-26:])
+            macd = (ema12 - ema26) / ema26 * 100
+        else:
+            macd = 0
+
+        # VWAP and bands
+        vwap_calc, vwap_up, vwap_low = calculate_vwap(klines)
+        vwap = vwap_calc or float(stats['lastPrice'])
+        vwap_upper = vwap_up or vwap * 1.002
+        vwap_lower = vwap_low or vwap * 0.998
+
+        # Order flow
+        imbalance, buy_vol, sell_vol = calculate_order_flow_imbalance(trades)
+
+        return {
+            'data_source': 'Binance Futures',
+            'current_price': float(stats['lastPrice']),
+            'price_change_24h': float(stats['priceChangePercent']),
+            'volume': float(stats['volume']),
+            'high_24h': float(stats['highPrice']),
+            'low_24h': float(stats['lowPrice']),
+            'rsi': round(rsi,2),
+            'macd': round(macd,2),
+            'vwap': vwap,
+            'vwap_upper': vwap_upper,
+            'vwap_lower': vwap_lower,
+            'price_vs_vwap': ((float(stats['lastPrice'])-vwap)/vwap*100),
+            'order_flow_imbalance': round(imbalance,2),
+            'aggressive_buy_volume': buy_vol,
+            'aggressive_sell_volume': sell_vol,
+            'last_updated': datetime.now().strftime('%H:%M:%S')
+        }
+    except Exception as e:
+        attempts.append(f"Futures API error: {str(e)[:50]}")
+    # Fallback to Spot demo
     return {
-        'data_source': 'Demo Mode',
-        'price': np.nan,
+        'data_source': f'Demo Mode ({len(attempts)} failures)',
+        'current_price': np.nan,
+        'price_change_24h': np.nan,
+        'volume': np.nan,
+        'high_24h': np.nan,
+        'low_24h': np.nan,
         'rsi': np.nan,
         'macd': np.nan,
         'vwap': np.nan,
         'vwap_upper': np.nan,
         'vwap_lower': np.nan,
-        'order_flow': []
+        'price_vs_vwap': np.nan,
+        'order_flow_imbalance': np.nan,
+        'aggressive_buy_volume': 0,
+        'aggressive_sell_volume': 0,
+        'last_updated': datetime.now().strftime('%H:%M:%S')
     }
 
 # Signal probability calculation
