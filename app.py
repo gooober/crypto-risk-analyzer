@@ -1113,4 +1113,3 @@ with st.expander("💡 Trading Tips - VWAP & Order Flow"):
 current_time = datetime.now()
 if (current_time - st.session_state.last_update).total_seconds() >= refresh_rate:
     st.session_state.last_update = current_time
-    st.rerun()
