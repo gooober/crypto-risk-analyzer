@@ -981,7 +981,73 @@ with tab3:
                 'Entry vs VWAP': f"{entry_vs_vwap:+.1f}%",
                 'Size': f"${trade['size']:.2f}",
                 'P&L %': f"{pnl:+.2f}%",
-                'P&L : f"${pnl_usd:+.2f}"
+                'P&L 
+            })
+        
+        # Display summary
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total P&L", f"${total_pnl:+.2f}")
+        with col2:
+            st.metric("Active Trades", len(st.session_state.trade_history))
+        with col3:
+            win_rate = sum(1 for t in trades_data if '+' in t['P&L %']) / len(trades_data) * 100
+            st.metric("Win Rate", f"{win_rate:.1f}%")
+        
+        # Display trades table
+        df = pd.DataFrame(trades_data)
+        st.dataframe(df, use_container_width=True)
+        
+        if st.button("Clear All Trades"):
+            st.session_state.trade_history = []
+            st.rerun()
+
+# Footer
+st.divider()
+st.caption("⚠️ This tool is for educational purposes only. Not financial advice. Trade responsibly!")
+
+# Tips
+with st.expander("💡 Trading Tips - VWAP & Order Flow"):
+    st.markdown("""
+    ### VWAP Trading Strategies
+    
+    **1. Mean Reversion**
+    - Buy when price is below VWAP with RSI < 30
+    - Sell when price is above VWAP with RSI > 70
+    - Target: Return to VWAP
+    
+    **2. Trend Following**
+    - Long bias when price stays above VWAP
+    - Short bias when price stays below VWAP
+    - Use VWAP as dynamic stop loss
+    
+    ### Order Flow Imbalance
+    
+    **1. Imbalance Signals**
+    - **>30%**: Strong buying pressure
+    - **<-30%**: Strong selling pressure
+    - **-20% to 20%**: Neutral zone
+    
+    **2. Divergence Trading**
+    - Price down + positive flow = Bullish divergence
+    - Price up + negative flow = Bearish divergence
+    
+    **3. Flow Confirmation**
+    - Only take longs with positive flow
+    - Only take shorts with negative flow
+    - Avoid trades against strong flow
+    
+    ### Risk Management with VWAP
+    - Use VWAP bands as stop loss levels
+    - Reduce position size when extended from VWAP
+    - Take partial profits at VWAP
+    """)
+
+# Auto-refresh logic
+current_time = datetime.now()
+if (current_time - st.session_state.last_update).total_seconds() >= refresh_rate:
+    st.session_state.last_update = current_time
+    st.rerun(): f"${pnl_usd:+.2f}"
             })
         
         # Display summary
